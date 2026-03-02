@@ -1,0 +1,51 @@
+{
+  "testTime": "2026-03-02T07:16:58.921Z",
+  "totalTests": 7,
+  "passed": 7,
+  "failed": 0,
+  "passRate": "100.0%",
+  "results": [
+    {
+      "description": "正常日志",
+      "expected": "INFO",
+      "actual": "INFO",
+      "passed": true
+    },
+    {
+      "description": "java.lang.RuntimeException: xxx",
+      "expected": "ERROR",
+      "actual": "ERROR",
+      "passed": true
+    },
+    {
+      "description": "at com.example...",
+      "expected": "ERROR",
+      "actual": "ERROR",
+      "passed": true
+    },
+    {
+      "description": "Caused by: xxx",
+      "expected": "ERROR",
+      "actual": "ERROR",
+      "passed": true
+    },
+    {
+      "description": "Traceback (most recent call last)",
+      "expected": "ERROR",
+      "actual": "ERROR",
+      "passed": true
+    },
+    {
+      "description": "File \"xxx\", line xxx",
+      "expected": "ERROR",
+      "actual": "ERROR",
+      "passed": true
+    },
+    {
+      "description": "Exception in thread",
+      "expected": "ERROR",
+      "actual": "ERROR",
+      "passed": true
+    }
+  ]
+}

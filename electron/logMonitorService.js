@@ -223,9 +223,10 @@ class LogMonitorService {
     const errorPatterns = [
       /(Exception|Error|Throwable):\s*/i,
       /Traceback \(most recent call last\)/,
-      /^\s+at\s+/,
+      /\s+at\s+[\w\.]+\(/,  // 匹配 "at com.example..." (允许前面有时间戳)
       /Caused by:/,
-      /Exception in thread/
+      /Exception in thread/,
+      /\s+File\s+"[^"]+",\s+line\s+\d+/  // 匹配 Python 堆栈 "File "xxx", line xxx"
     ];
 
     const isError = errorPatterns.some(pattern => pattern.test(line));

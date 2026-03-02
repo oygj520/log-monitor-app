@@ -4,6 +4,22 @@
  */
 
 /**
+ * 检测堆栈跟踪关键字
+ */
+function isStackTrace(line) {
+  const stackTracePatterns = [
+    /java\.lang\./,
+    /at [\w\.]+\(/,
+    /Caused by:/,
+    /Exception in thread/,
+    /Traceback \(most recent call last\)/,
+    /File "[^"]+", line \d+/
+  ];
+  
+  return stackTracePatterns.some(pattern => pattern.test(line));
+}
+
+/**
  * 解析单行日志
  * @param {string} line - 日志行
  * @param {string} source - 来源文件名
@@ -27,21 +43,31 @@ export function parseLogLine(line, source = 'unknown') {
     parseSyslogFormat        // Syslog 格式
   ];
 
+  let result = null;
   for (const parser of parsers) {
-    const result = parser(trimmedLine, source);
+    result = parser(trimmedLine, source);
     if (result) {
-      return result;
+      break;
     }
   }
 
   // 如果所有格式都不匹配，返回原始日志
-  return {
-    timestamp: new Date().toISOString(),
-    level: 'INFO',
-    message: trimmedLine,
-    source,
-    raw: trimmedLine
-  };
+  if (!result) {
+    result = {
+      timestamp: new Date().toISOString(),
+      level: 'INFO',
+      message: trimmedLine,
+      source,
+      raw: trimmedLine
+    };
+  }
+
+  // 检测堆栈跟踪，自动识别为 ERROR 级别
+  if (isStackTrace(trimmedLine)) {
+    result.level = 'ERROR';
+  }
+
+  return result;
 }
 
 /**
