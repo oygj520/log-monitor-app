@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 function LogViewer() {
   const [logs, setLogs] = useState([]);
@@ -17,11 +17,19 @@ function LogViewer() {
   });
   const [autoRefresh, setAutoRefresh] = useState(true);
   const logsRef = useRef(logs);
+  const refreshKeyRef = useRef(0); // 用于强制刷新的 key
   
   // 保持 logsRef 同步
   useEffect(() => {
     logsRef.current = logs;
   }, [logs]);
+
+  // 计算分页数据
+  const getPaginatedLogs = useCallback(() => {
+    const start = (pagination.page - 1) * pagination.pageSize;
+    const end = start + pagination.pageSize;
+    return logs.slice(start, end);
+  }, [logs, pagination.page, pagination.pageSize]);
 
   useEffect(() => {
     loadLogs();
@@ -34,12 +42,14 @@ function LogViewer() {
           // 只有在没有过滤条件时才自动追加新日志
           setLogs(prev => {
             const newLogs = [...(data.logs || []), ...prev];
-            // 去重
+            // 去重 - 使用新的数据替换旧数据
             const uniqueLogs = Array.from(
-              new Map(newLogs.map(log => [log.id, log])).values()
+              new Map(newLogs.map(log => [`${log.timestamp}-${log.message}`, log])).values()
             ).slice(0, 1000); // 最多保留 1000 条
             return uniqueLogs;
           });
+          // 更新分页总数
+          setPagination(prev => ({ ...prev, total: data.logs?.length || 0 }));
         }
       });
     }
@@ -47,7 +57,7 @@ function LogViewer() {
     return () => {
       // 清理监听器
     };
-  }, []);
+  }, [autoRefresh, filters]);
 
   const loadLogs = async () => {
     setLoading(true);
@@ -59,7 +69,14 @@ function LogViewer() {
           ...filters
         };
         const result = await window.electronAPI.getLogs(options);
-        setLogs(result || []);
+        // 确保每次加载都创建新的数组引用，触发重新渲染
+        setLogs(result ? [...result] : []);
+        // 更新总数
+        setPagination(prev => ({ 
+          ...prev, 
+          total: result?.length || 0,
+          page: result?.length === 0 && prev.page > 1 ? prev.page - 1 : prev.page
+        }));
       }
     } catch (error) {
       console.error('加载日志失败:', error);
@@ -191,8 +208,8 @@ function LogViewer() {
                 </tr>
               </thead>
               <tbody>
-                {logs.map(log => (
-                  <tr key={log.id}>
+                {getPaginatedLogs().map((log, index) => (
+                  <tr key={`${log.timestamp}-${log.message}-${index}`}>
                     <td>{new Date(log.timestamp).toLocaleString()}</td>
                     <td>
                       <span className={getLevelClass(log.level)}>
@@ -220,19 +237,26 @@ function LogViewer() {
               borderTop: '1px solid #eee'
             }}>
               <div style={{ fontSize: '13px', color: '#666' }}>
-                第 {pagination.page} 页，每页 {pagination.pageSize} 条
+                第 {pagination.page} 页，每页 {pagination.pageSize} 条，共 {Math.ceil(logs.length / pagination.pageSize)} 页
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   className="btn"
                   disabled={pagination.page === 1}
-                  onClick={() => setPagination(prev => ({ ...prev, page: prev.page - 1 }))}
+                  onClick={() => {
+                    setPagination(prev => ({ ...prev, page: prev.page - 1 }));
+                    loadLogs();
+                  }}
                 >
                   上一页
                 </button>
                 <button
                   className="btn"
-                  onClick={() => setPagination(prev => ({ ...prev, page: prev.page + 1 }))}
+                  disabled={pagination.page >= Math.ceil(logs.length / pagination.pageSize)}
+                  onClick={() => {
+                    setPagination(prev => ({ ...prev, page: prev.page + 1 }));
+                    loadLogs();
+                  }}
                 >
                   下一页
                 </button>
