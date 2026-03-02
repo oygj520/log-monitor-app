@@ -1,26 +1,59 @@
-const Database = require('better-sqlite3');
+const initSqlJs = require('sql.js');
 const PathManager = require('./pathManager');
 const path = require('path');
+const fs = require('fs');
 
 class DatabaseService {
   constructor() {
     this.db = null;
+    this.SQL = null;
+    this.dbPath = null;
   }
 
   /**
    * 初始化数据库
    */
-  initialize() {
-    const dbPath = PathManager.getDatabasePath();
-    console.log('初始化数据库:', dbPath);
+  async initialize() {
+    this.dbPath = PathManager.getDatabasePath();
+    console.log('初始化数据库:', this.dbPath);
     
     try {
-      this.db = new Database(dbPath);
-      this.createTables();
+      // 初始化 sql.js
+      this.SQL = await initSqlJs();
+      
+      // 检查数据库文件是否存在
+      if (fs.existsSync(this.dbPath)) {
+        // 读取现有数据库文件
+        const fileBuffer = fs.readFileSync(this.dbPath);
+        this.db = new this.SQL.Database(fileBuffer);
+        console.log('加载现有数据库成功');
+      } else {
+        // 创建新数据库
+        this.db = new this.SQL.Database();
+        this.createTables();
+        this.saveDatabase();
+        console.log('创建新数据库成功');
+      }
+      
       console.log('数据库初始化成功');
     } catch (error) {
       console.error('数据库初始化失败:', error);
       throw error;
+    }
+  }
+
+  /**
+   * 保存数据库到文件
+   */
+  saveDatabase() {
+    if (!this.db) return;
+    
+    try {
+      const data = this.db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(this.dbPath, buffer);
+    } catch (error) {
+      console.error('保存数据库失败:', error);
     }
   }
 
@@ -90,26 +123,22 @@ class DatabaseService {
   saveLogs(logs) {
     if (!this.db) return;
 
-    const insert = this.db.prepare(`
-      INSERT OR REPLACE INTO logs (id, filePath, timestamp, level, message, source, raw)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+    try {
+      this.db.exec('BEGIN TRANSACTION');
 
-    const insertMany = this.db.transaction((logs) => {
       for (const log of logs) {
-        insert.run(
-          log.id,
-          log.filePath,
-          log.timestamp,
-          log.level,
-          log.message,
-          log.source,
-          log.raw
-        );
+        this.db.exec(`
+          INSERT OR REPLACE INTO logs (id, filePath, timestamp, level, message, source, raw)
+          VALUES ('${log.id}', '${log.filePath}', '${log.timestamp}', '${log.level}', '${log.message}', '${log.source}', '${log.raw || ''}')
+        `);
       }
-    });
 
-    insertMany(logs);
+      this.db.exec('COMMIT');
+      this.saveDatabase();
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      console.error('保存日志失败:', error);
+    }
   }
 
   /**
@@ -130,46 +159,48 @@ class DatabaseService {
     } = options;
 
     let query = 'SELECT * FROM logs WHERE 1=1';
-    const params = [];
+    const conditions = [];
 
     if (level) {
-      query += ' AND level = ?';
-      params.push(level);
+      conditions.push(`level = '${level}'`);
     }
 
     if (keyword) {
-      query += ' AND message LIKE ?';
-      params.push(`%${keyword}%`);
+      conditions.push(`message LIKE '%${keyword}%'`);
     }
 
     if (startDate) {
-      query += ' AND timestamp >= ?';
-      params.push(startDate);
+      conditions.push(`timestamp >= '${startDate}'`);
     }
 
     if (endDate) {
-      query += ' AND timestamp <= ?';
-      params.push(endDate);
+      conditions.push(`timestamp <= '${endDate}'`);
     }
 
     if (source) {
-      query += ' AND source = ?';
-      params.push(source);
+      conditions.push(`source = '${source}'`);
     }
 
     if (filePath) {
-      query += ' AND filePath LIKE ?';
-      params.push(`%${filePath}%`);
+      conditions.push(`filePath LIKE '%${filePath}%'`);
+    }
+
+    if (conditions.length > 0) {
+      query += ' AND ' + conditions.join(' AND ');
     }
 
     query += ' ORDER BY timestamp DESC';
-    query += ' LIMIT ? OFFSET ?';
-    
-    params.push(pageSize);
-    params.push((page - 1) * pageSize);
+    query += ` LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
 
     const stmt = this.db.prepare(query);
-    return stmt.all(...params);
+    const results = [];
+    
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    return results;
   }
 
   /**
@@ -181,55 +212,78 @@ class DatabaseService {
     const { startDate, endDate } = options;
     
     let whereClause = 'WHERE 1=1';
-    const params = [];
+    const conditions = [];
 
     if (startDate) {
-      whereClause += ' AND timestamp >= ?';
-      params.push(startDate);
+      conditions.push(`timestamp >= '${startDate}'`);
     }
 
     if (endDate) {
-      whereClause += ' AND timestamp <= ?';
-      params.push(endDate);
+      conditions.push(`timestamp <= '${endDate}'`);
+    }
+
+    if (conditions.length > 0) {
+      whereClause += ' AND ' + conditions.join(' AND ');
     }
 
     // 按级别统计
-    const levelStats = this.db.prepare(`
+    const levelStatsQuery = `
       SELECT level, COUNT(*) as count
       FROM logs ${whereClause}
       GROUP BY level
       ORDER BY count DESC
-    `).all(...params);
+    `;
+    const levelStats = this.executeQuery(levelStatsQuery);
 
     // 按来源统计
-    const sourceStats = this.db.prepare(`
+    const sourceStatsQuery = `
       SELECT source, COUNT(*) as count
       FROM logs ${whereClause}
       GROUP BY source
       ORDER BY count DESC
       LIMIT 20
-    `).all(...params);
+    `;
+    const sourceStats = this.executeQuery(sourceStatsQuery);
 
     // 总数
-    const total = this.db.prepare(`
+    const totalQuery = `
       SELECT COUNT(*) as count FROM logs ${whereClause}
-    `).get(...params);
+    `;
+    const totalResult = this.db.prepare(totalQuery);
+    const total = totalResult.step() ? totalResult.getAsObject().count : 0;
+    totalResult.free();
 
     // 时间趋势（按小时）
-    const timeTrend = this.db.prepare(`
+    const timeTrendQuery = `
       SELECT strftime('%Y-%m-%d %H:00', timestamp) as hour, COUNT(*) as count
       FROM logs ${whereClause}
       GROUP BY hour
       ORDER BY hour DESC
       LIMIT 48
-    `).all(...params);
+    `;
+    const timeTrend = this.executeQuery(timeTrendQuery);
 
     return {
-      total: total.count,
+      total: total,
       byLevel: levelStats,
       bySource: sourceStats,
       timeTrend
     };
+  }
+
+  /**
+   * 执行查询并返回结果
+   */
+  executeQuery(query) {
+    const stmt = this.db.prepare(query);
+    const results = [];
+    
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    
+    return results;
   }
 
   /**
@@ -238,20 +292,16 @@ class DatabaseService {
   saveMonitorConfig(config) {
     if (!this.db) return;
 
-    const insert = this.db.prepare(`
-      INSERT OR REPLACE INTO monitor_configs 
-      (id, name, paths, alertKeywords, customKeywords, status, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `);
-
-    insert.run(
-      config.id,
-      config.name,
-      JSON.stringify(config.paths),
-      JSON.stringify(config.alertKeywords || []),
-      JSON.stringify(config.customKeywords || []),
-      config.status || 'stopped'
-    );
+    try {
+      this.db.exec(`
+        INSERT OR REPLACE INTO monitor_configs 
+        (id, name, paths, alertKeywords, customKeywords, status, updatedAt)
+        VALUES ('${config.id}', '${config.name}', '${JSON.stringify(config.paths)}', '${JSON.stringify(config.alertKeywords || [])}', '${JSON.stringify(config.customKeywords || [])}', '${config.status || 'stopped'}', CURRENT_TIMESTAMP)
+      `);
+      this.saveDatabase();
+    } catch (error) {
+      console.error('保存监控配置失败:', error);
+    }
   }
 
   /**
@@ -260,15 +310,22 @@ class DatabaseService {
   getMonitorConfigs() {
     if (!this.db) return [];
 
-    const stmt = this.db.prepare('SELECT * FROM monitor_configs ORDER BY createdAt DESC');
-    const configs = stmt.all();
+    const query = 'SELECT * FROM monitor_configs ORDER BY createdAt DESC';
+    const stmt = this.db.prepare(query);
+    const configs = [];
 
-    return configs.map(config => ({
-      ...config,
-      paths: JSON.parse(config.paths),
-      alertKeywords: JSON.parse(config.alertKeywords),
-      customKeywords: JSON.parse(config.customKeywords)
-    }));
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      configs.push({
+        ...row,
+        paths: JSON.parse(row.paths),
+        alertKeywords: JSON.parse(row.alertKeywords),
+        customKeywords: JSON.parse(row.customKeywords)
+      });
+    }
+    stmt.free();
+
+    return configs;
   }
 
   /**
@@ -277,19 +334,15 @@ class DatabaseService {
   saveAlert(alert) {
     if (!this.db) return;
 
-    const insert = this.db.prepare(`
-      INSERT INTO alerts (id, monitorId, type, level, message, logId)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
-    insert.run(
-      alert.id,
-      alert.monitorId,
-      alert.type,
-      alert.level,
-      alert.message,
-      alert.logId
-    );
+    try {
+      this.db.exec(`
+        INSERT INTO alerts (id, monitorId, type, level, message, logId)
+        VALUES ('${alert.id}', '${alert.monitorId}', '${alert.type}', '${alert.level || ''}', '${alert.message}', '${alert.logId || ''}')
+      `);
+      this.saveDatabase();
+    } catch (error) {
+      console.error('保存告警记录失败:', error);
+    }
   }
 
   /**
@@ -301,21 +354,28 @@ class DatabaseService {
     const { page = 1, pageSize = 50, monitorId } = options;
 
     let query = 'SELECT * FROM alerts WHERE 1=1';
-    const params = [];
+    const conditions = [];
 
     if (monitorId) {
-      query += ' AND monitorId = ?';
-      params.push(monitorId);
+      conditions.push(`monitorId = '${monitorId}'`);
+    }
+
+    if (conditions.length > 0) {
+      query += ' AND ' + conditions.join(' AND ');
     }
 
     query += ' ORDER BY createdAt DESC';
-    query += ' LIMIT ? OFFSET ?';
-    
-    params.push(pageSize);
-    params.push((page - 1) * pageSize);
+    query += ` LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
 
     const stmt = this.db.prepare(query);
-    return stmt.all(...params);
+    const results = [];
+    
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    return results;
   }
 
   /**
@@ -323,8 +383,10 @@ class DatabaseService {
    */
   close() {
     if (this.db) {
+      this.saveDatabase();
       this.db.close();
       this.db = null;
+      this.SQL = null;
     }
   }
 }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
+import * as echarts from 'echarts';
 
 function Dashboard({ stats }) {
   const [monitorStatus, setMonitorStatus] = useState([]);
@@ -83,7 +84,7 @@ function Dashboard({ stats }) {
         type: 'line',
         smooth: true,
         areaStyle: {
-          color: new ReactECharts.echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: 'rgba(24, 144, 255, 0.5)' },
             { offset: 1, color: 'rgba(24, 144, 255, 0.1)' }
           ])

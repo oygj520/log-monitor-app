@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+console.log('🔌 preload.js 开始执行');
+
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
   // 路径相关
@@ -38,3 +40,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('monitoring-status-change', (event, data) => callback(data));
   }
 });
+
+console.log('✅ electronAPI 暴露完成');

@@ -26,11 +26,31 @@ function createWindow() {
 
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
   
+  // 添加调试日志
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('✅ 页面加载完成');
+  });
+  
+  mainWindow.webContents.on('did-fail-load', (event, code, desc) => {
+    console.error('❌ 页面加载失败:', code, desc);
+  });
+  
+  mainWindow.webContents.on('crashed', () => {
+    console.error('❌ 渲染进程崩溃');
+  });
+  
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('❌ 渲染进程丢失:', details);
+  });
+  
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../build/index.html'));
+    const htmlPath = path.join(__dirname, '../build/index.html');
+    console.log('📁 加载文件路径:', htmlPath);
+    console.log('📁 __dirname:', __dirname);
+    mainWindow.loadFile(htmlPath);
   }
 
   mainWindow.on('closed', () => {
@@ -38,18 +58,29 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
-  // 初始化路径管理器
-  PathManager.initialize();
+app.whenReady().then(async () => {
+  console.log('🚀 app.whenReady 触发');
   
-  // 初始化数据库服务
-  databaseService = new DatabaseService();
-  databaseService.initialize();
-  
-  // 初始化日志监控服务
-  logMonitorService = new LogMonitorService(databaseService);
-  
-  createWindow();
+  try {
+    // 初始化路径管理器
+    PathManager.initialize();
+    console.log('✅ 路径管理器初始化完成');
+    
+    // 初始化数据库服务
+    databaseService = new DatabaseService();
+    await databaseService.initialize();
+    console.log('✅ 数据库服务初始化完成');
+    
+    // 初始化日志监控服务
+    logMonitorService = new LogMonitorService(databaseService);
+    console.log('✅ 日志监控服务初始化完成');
+    
+    createWindow();
+    console.log('✅ 窗口创建完成');
+  } catch (error) {
+    console.error('❌ 初始化失败:', error);
+    dialog.showErrorBox('初始化错误', error.message);
+  }
 });
 
 app.on('window-all-closed', () => {
