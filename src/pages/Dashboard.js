@@ -19,6 +19,22 @@ function Dashboard({ stats }) {
       loadChartData();
     }, 10000);
 
+    // 监听监控状态变化
+    if (window.electronAPI && window.electronAPI.onMonitoringStatusChange) {
+      window.electronAPI.onMonitoringStatusChange((status) => {
+        console.log('监控状态变化:', status);
+        setMonitorStatus(status);
+      });
+    }
+    
+    // 监听告警
+    if (window.electronAPI && window.electronAPI.onAlert) {
+      window.electronAPI.onAlert((alert) => {
+        console.log('收到告警:', alert);
+        setRecentAlerts(prev => [alert, ...prev].slice(0, 10));
+      });
+    }
+
     return () => clearInterval(interval);
   }, []);
 

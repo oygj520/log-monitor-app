@@ -11,6 +11,61 @@ body {
   background-color: #f0f2f5;
 }
 
+/* 确保所有输入框可点击 - 修复输入框被遮挡问题 */
+input, textarea, select, button {
+  position: relative;
+  z-index: 100;
+  pointer-events: auto;
+}
+
+/* 修复表单输入框层级 */
+.form-input, .input, .select {
+  position: relative;
+  z-index: 100;
+  pointer-events: auto;
+}
+
+/* 确保 header 层级不会遮挡内容 */
+.app-header {
+  position: relative;
+  z-index: 10;
+}
+
+/* 确保 modal 层级正确 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  position: relative;
+  z-index: 1001;
+}
+
+/* 确保 modal 内的输入框可点击 */
+.modal input,
+.modal textarea,
+.modal select,
+.modal button {
+  z-index: 1002;
+  pointer-events: auto;
+}
+
 .app-container {
   min-height: 100vh;
   display: flex;
@@ -329,29 +384,6 @@ body {
 .empty-state-text {
   font-size: 16px;
   margin-bottom: 8px;
-}
-
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal {
-  background: white;
-  border-radius: 8px;
-  width: 90%;
-  max-width: 600px;
-  max-height: 80vh;
-  overflow: auto;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .modal-header {

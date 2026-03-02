@@ -198,6 +198,14 @@ function MonitorConfig() {
       if (window.electronAPI) {
         const result = await window.electronAPI.startMonitoring(monitor);
         if (result.success) {
+          console.log('监控已启动:', result.id);
+          // 刷新监控状态
+          loadMonitors();
+          // 通知 Dashboard 更新状态
+          if (window.electronAPI.onMonitoringStatusChange) {
+            const status = await window.electronAPI.getMonitoringStatus();
+            window.electronAPI.onMonitoringStatusChange(status);
+          }
           alert('监控已启动');
         } else {
           alert('启动失败：' + result.error);

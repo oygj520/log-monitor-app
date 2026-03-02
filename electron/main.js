@@ -21,7 +21,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, '../build/icon.ico'),
-    title: '日志监控系统'
+    title: '日志监控系统',
+    show: false // 先不显示，等加载完成再显示
+  });
+  
+  // 页面加载完成后显示窗口
+  mainWindow.once('ready-to-show', () => {
+    console.log('✅ 窗口准备就绪，显示窗口');
+    mainWindow.show();
   });
 
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -116,15 +123,21 @@ ipcMain.handle('get-config-path', () => {
 
 // 日志监控相关
 ipcMain.handle('start-monitoring', async (event, config) => {
-  return logMonitorService.startMonitoring(config);
+  console.log('[IPC] 启动监控:', config);
+  const result = await logMonitorService.startMonitoring(config);
+  console.log('[IPC] 监控启动结果:', result);
+  return result;
 });
 
 ipcMain.handle('stop-monitoring', async (event, id) => {
+  console.log('[IPC] 停止监控:', id);
   return logMonitorService.stopMonitoring(id);
 });
 
 ipcMain.handle('get-monitoring-status', async () => {
-  return logMonitorService.getStatus();
+  const status = logMonitorService.getStatus();
+  console.log('[IPC] 获取监控状态:', status);
+  return status;
 });
 
 ipcMain.handle('get-logs', async (event, options) => {
@@ -139,14 +152,18 @@ ipcMain.handle('get-log-statistics', async (event, options) => {
 ipcMain.handle('save-config', async (event, config) => {
   const configPath = PathManager.getConfigPath();
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  console.log('[IPC] 配置已保存:', configPath);
   return { success: true };
 });
 
 ipcMain.handle('load-config', async () => {
   const configPath = PathManager.getConfigPath();
   if (fs.existsSync(configPath)) {
-    return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    console.log('[IPC] 配置已加载:', configPath);
+    return config;
   }
+  console.log('[IPC] 配置文件不存在');
   return null;
 });
 
@@ -171,6 +188,8 @@ ipcMain.handle('select-folder', async () => {
 
 // 告警通知
 ipcMain.handle('show-notification', async (event, title, message) => {
-  mainWindow.flashFrame(true);
+  if (mainWindow) {
+    mainWindow.flashFrame(true);
+  }
   return { success: true };
 });

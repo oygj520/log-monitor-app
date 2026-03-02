@@ -8,6 +8,7 @@ class LogMonitorService {
     this.databaseService = databaseService;
     this.monitors = new Map(); // 存储所有监控器
     this.fileWatchers = new Map(); // 存储文件监听器
+    this.filePositions = new Map(); // 存储每个文件的读取位置 { filePath: { position, inode } }
   }
 
   /**
@@ -23,32 +24,36 @@ class LogMonitorService {
     };
 
     try {
+      console.log(`[监控服务] 开始监控任务 ${id}, 路径：`, config.paths);
+
       // 创建文件监听器
       const watcher = chokidar.watch(config.paths, {
         ignored: /(^|[\/\\])\../,
         persistent: true,
         ignoreInitial: false,
         awaitWriteFinish: {
-          stabilityThreshold: 2000,
+          stabilityThreshold: 500,
           pollInterval: 100
-        }
+        },
+        usePolling: true,
+        interval: 1000
       });
 
       // 处理新文件
       watcher.on('add', (filePath) => {
-        console.log(`新文件: ${filePath}`);
-        this.processLogFile(filePath, monitorConfig);
+        console.log(`[监控服务] 新文件：${filePath}`);
+        this.processLogFile(filePath, monitorConfig, false);
       });
 
       // 处理文件变化
       watcher.on('change', (filePath) => {
-        console.log(`文件变化: ${filePath}`);
+        console.log(`[监控服务] 文件变化：${filePath}`);
         this.processLogFile(filePath, monitorConfig, true);
       });
 
       // 处理错误
       watcher.on('error', (error) => {
-        console.error(`监控错误: ${error}`);
+        console.error(`[监控服务] 监控错误：${error}`);
         this.emitAlert(monitorConfig.id, 'error', error.message);
       });
 
@@ -60,7 +65,7 @@ class LogMonitorService {
 
       return { success: true, id, message: '监控已启动' };
     } catch (error) {
-      console.error('启动监控失败:', error);
+      console.error('[监控服务] 启动监控失败:', error);
       return { success: false, error: error.message };
     }
   }
@@ -95,6 +100,7 @@ class LogMonitorService {
     }
     this.fileWatchers.clear();
     this.monitors.clear();
+    this.filePositions.clear();
   }
 
   /**
@@ -116,15 +122,57 @@ class LogMonitorService {
   }
 
   /**
-   * 处理日志文件
+   * 处理日志文件（增量读取）
    */
   async processLogFile(filePath, monitorConfig, isUpdate = false) {
     try {
       const stats = fs.statSync(filePath);
-      const content = fs.readFileSync(filePath, 'utf-8');
+      
+      // 获取文件唯一标识（inode 或 dev+size）
+      const fileKey = `${stats.dev}:${stats.ino}`;
+      const storedPosition = this.filePositions.get(fileKey);
+      
+      let startPosition = 0;
+      let isNewFile = false;
+      
+      // 检查是否是新文件或文件被重置
+      if (!storedPosition || storedPosition.ino !== stats.ino) {
+        console.log(`[监控服务] 新文件或文件重置：${filePath}`);
+        isNewFile = true;
+        startPosition = 0;
+      } else {
+        startPosition = storedPosition.position;
+      }
+      
+      // 如果文件变小了，说明被截断了，从头开始
+      if (stats.size < startPosition) {
+        console.log(`[监控服务] 文件被截断，重新读取：${filePath}`);
+        startPosition = 0;
+      }
+      
+      // 如果没有新内容，跳过
+      if (stats.size === startPosition && isUpdate) {
+        console.log(`[监控服务] 文件无新内容：${filePath}`);
+        return;
+      }
+      
+      // 读取新内容
+      const buffer = Buffer.alloc(stats.size - startPosition);
+      const fd = fs.openSync(filePath, 'r');
+      fs.readSync(fd, buffer, 0, stats.size - startPosition, startPosition);
+      fs.closeSync(fd);
+      
+      const newContent = buffer.toString('utf-8');
+      
+      // 更新文件位置
+      this.filePositions.set(fileKey, {
+        position: stats.size,
+        inode: stats.ino,
+        filePath
+      });
       
       // 解析日志行
-      const lines = content.split('\n');
+      const lines = newContent.split('\n');
       let newLogs = [];
 
       for (const line of lines) {
@@ -138,15 +186,21 @@ class LogMonitorService {
 
       // 保存到数据库
       if (newLogs.length > 0) {
+        console.log(`[监控服务] 解析到 ${newLogs.length} 条新日志`);
         await this.databaseService.saveLogs(newLogs);
         monitorConfig.logCount = (monitorConfig.logCount || 0) + newLogs.length;
         
         // 检查告警
         this.checkAlerts(newLogs, monitorConfig);
+        
+        // 发送日志更新通知到前端
+        this.emitLogUpdate(newLogs);
+      } else {
+        console.log(`[监控服务] 未解析到有效日志：${filePath}`);
       }
 
     } catch (error) {
-      console.error(`处理文件 ${filePath} 失败:`, error);
+      console.error(`[监控服务] 处理文件 ${filePath} 失败:`, error);
     }
   }
 
@@ -237,15 +291,58 @@ class LogMonitorService {
    * 发送告警
    */
   emitAlert(monitorId, type, data) {
-    // 这里可以通过 IPC 发送告警到前端
-    console.log(`告警 [${monitorId}]: ${type}`, data);
+    console.log(`[监控服务] 告警 [${monitorId}]: ${type}`, data);
+    // 通过 IPC 发送告警到前端
+    try {
+      const { BrowserWindow } = require('electron');
+      const windows = BrowserWindow.getAllWindows();
+      if (windows.length > 0) {
+        windows[0].webContents.send('alert', {
+          monitorId,
+          type,
+          data,
+          createdAt: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('[监控服务] 发送告警失败:', error);
+    }
+  }
+
+  /**
+   * 发送日志更新通知
+   */
+  emitLogUpdate(logs) {
+    console.log(`[监控服务] 发送 ${logs.length} 条日志更新到前端`);
+    try {
+      const { BrowserWindow } = require('electron');
+      const windows = BrowserWindow.getAllWindows();
+      if (windows.length > 0) {
+        windows[0].webContents.send('log-update', {
+          logs,
+          count: logs.length,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('[监控服务] 发送日志更新失败:', error);
+    }
   }
 
   /**
    * 发送状态变化通知
    */
   emitStatusChange() {
-    console.log('监控状态变化');
+    console.log('[监控服务] 监控状态变化');
+    try {
+      const { BrowserWindow } = require('electron');
+      const windows = BrowserWindow.getAllWindows();
+      if (windows.length > 0) {
+        windows[0].webContents.send('monitoring-status-change', this.getStatus());
+      }
+    } catch (error) {
+      console.error('[监控服务] 发送状态变化失败:', error);
+    }
   }
 }
 

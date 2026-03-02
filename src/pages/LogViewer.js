@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 function LogViewer() {
   const [logs, setLogs] = useState([]);
@@ -15,10 +15,39 @@ function LogViewer() {
     pageSize: 50,
     total: 0
   });
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const logsRef = useRef(logs);
+  
+  // 保持 logsRef 同步
+  useEffect(() => {
+    logsRef.current = logs;
+  }, [logs]);
 
   useEffect(() => {
     loadLogs();
-  }, [pagination.page, filters]);
+    
+    // 监听日志更新事件
+    if (window.electronAPI && window.electronAPI.onLogUpdate) {
+      window.electronAPI.onLogUpdate((data) => {
+        console.log('收到日志更新:', data);
+        if (autoRefresh && (!filters.level && !filters.keyword && !filters.startDate && !filters.endDate)) {
+          // 只有在没有过滤条件时才自动追加新日志
+          setLogs(prev => {
+            const newLogs = [...(data.logs || []), ...prev];
+            // 去重
+            const uniqueLogs = Array.from(
+              new Map(newLogs.map(log => [log.id, log])).values()
+            ).slice(0, 1000); // 最多保留 1000 条
+            return uniqueLogs;
+          });
+        }
+      });
+    }
+    
+    return () => {
+      // 清理监听器
+    };
+  }, []);
 
   const loadLogs = async () => {
     setLoading(true);
@@ -60,6 +89,10 @@ function LogViewer() {
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
+  const toggleAutoRefresh = () => {
+    setAutoRefresh(!autoRefresh);
+  };
+
   const getLevelClass = (level) => {
     return `log-level ${level.toUpperCase()}`;
   };
@@ -67,7 +100,16 @@ function LogViewer() {
   return (
     <div>
       <div className="card">
-        <div className="card-title">日志过滤</div>
+        <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>日志过滤</span>
+          <button
+            className={`btn ${autoRefresh ? 'btn-success' : ''}`}
+            onClick={toggleAutoRefresh}
+            style={{ fontSize: '12px', padding: '4px 12px' }}
+          >
+            {autoRefresh ? '🔔 自动刷新已开启' : '🔕 自动刷新已关闭'}
+          </button>
+        </div>
         <div className="filter-bar">
           <div className="filter-item">
             <label>级别:</label>
