@@ -1,8 +1,68 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+
+// 性能优化配置
+const CONFIG = {
+  MAX_LOGS_CACHE: 10000, // 最大缓存日志数
+  VISIBLE_COUNT: 30, // 可见区域日志数
+  PAGE_SIZE: 100, // 每页加载数量
+  AUTO_REFRESH_INTERVAL: 5000 // 自动刷新间隔 (ms)
+};
+
+// 环形缓冲区实现 - 用于内存限制
+class RingBuffer {
+  constructor(maxSize) {
+    this.maxSize = maxSize;
+    this.buffer = [];
+    this.head = 0;
+    this.tail = 0;
+    this.size = 0;
+  }
+
+  push(item) {
+    if (this.size === this.maxSize) {
+      // 缓冲区满，移除最旧的
+      this.head = (this.head + 1) % this.maxSize;
+      this.size--;
+    }
+    this.buffer[this.tail] = item;
+    this.tail = (this.tail + 1) % this.maxSize;
+    this.size++;
+    return this;
+  }
+
+  pushMany(items) {
+    for (const item of items) {
+      this.push(item);
+    }
+    return this;
+  }
+
+  toArray() {
+    const result = [];
+    for (let i = 0; i < this.size; i++) {
+      result.push(this.buffer[(this.head + i) % this.maxSize]);
+    }
+    return result;
+  }
+
+  clear() {
+    this.buffer = [];
+    this.head = 0;
+    this.tail = 0;
+    this.size = 0;
+  }
+
+  get length() {
+    return this.size;
+  }
+}
 
 function LogViewer() {
-  const [logs, setLogs] = useState([]);
+  // 使用环形缓冲区存储日志，限制内存使用
+  const logsBufferRef = useRef(new RingBuffer(CONFIG.MAX_LOGS_CACHE));
+  const [logsVersion, setLogsVersion] = useState(0); // 用于触发重渲染
   const [loading, setLoading] = useState(false);
+  
   const [filters, setFilters] = useState({
     level: '',
     keyword: '',
@@ -10,39 +70,68 @@ function LogViewer() {
     endDate: '',
     source: ''
   });
+  
   const [pagination, setPagination] = useState({
     page: 1,
-    pageSize: 50,
+    pageSize: CONFIG.PAGE_SIZE,
     total: 0
   });
+  
   const [autoRefresh, setAutoRefresh] = useState(true);
   const refreshIntervalRef = useRef(null);
-  
-  // BUG-1 修复：计算分页数据 - 确保正确切片
+  const scrollContainerRef = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const itemHeight = 40; // 每行高度 (px)
+
+  // 获取当前日志数组
+  const getLogs = useCallback(() => {
+    return logsBufferRef.current.toArray();
+  }, []);
+
+  // 虚拟滚动：计算可见区域
+  const virtualScrollData = useMemo(() => {
+    const allLogs = getLogs();
+    const totalHeight = allLogs.length * itemHeight;
+    const startIndex = Math.floor(scrollTop / itemHeight);
+    const endIndex = Math.min(startIndex + CONFIG.VISIBLE_COUNT + 5, allLogs.length); // 多渲染 5 条作为缓冲
+    const visibleLogs = allLogs.slice(startIndex, endIndex);
+    
+    return {
+      visibleLogs,
+      startIndex,
+      totalHeight,
+      offsetY: startIndex * itemHeight
+    };
+  }, [logsVersion, scrollTop]);
+
+  // 处理滚动事件
+  const handleScroll = useCallback((e) => {
+    setScrollTop(e.target.scrollTop);
+  }, []);
+
+  // BUG-1 修复：计算分页数据
   const getPaginatedLogs = useCallback(() => {
+    const allLogs = getLogs();
     const start = (pagination.page - 1) * pagination.pageSize;
     const end = start + pagination.pageSize;
-    return logs.slice(start, end);
-  }, [logs, pagination.page, pagination.pageSize]);
+    return allLogs.slice(start, end);
+  }, [logsVersion, pagination.page, pagination.pageSize]);
 
   // BUG-2 修复：独立的定时器管理
   useEffect(() => {
-    // 清理旧的定时器
     if (refreshIntervalRef.current) {
       clearInterval(refreshIntervalRef.current);
       refreshIntervalRef.current = null;
     }
     
-    // 只有在 autoRefresh 为 true 时才设置定时器
     if (autoRefresh) {
       refreshIntervalRef.current = setInterval(() => {
         console.log('自动刷新日志...');
-        loadLogs(true); // 传入 isAutoRefresh 标志
-      }, 5000); // 每 5 秒刷新一次
+        loadLogs(true);
+      }, CONFIG.AUTO_REFRESH_INTERVAL);
     }
     
     return () => {
-      // 清理定时器
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
         refreshIntervalRef.current = null;
@@ -55,6 +144,7 @@ function LogViewer() {
     setLoading(true);
     try {
       if (window.electronAPI) {
+        // 3. 后端过滤：传递过滤条件到后端
         const options = {
           page: pagination.page,
           pageSize: pagination.pageSize,
@@ -62,14 +152,15 @@ function LogViewer() {
         };
         const result = await window.electronAPI.getLogs(options);
         
-        // BUG-3 修复：确保创建全新的数组引用，触发重新渲染
-        const newLogs = result ? [...result] : [];
-        setLogs(newLogs);
+        // 2. 内存限制：使用环形缓冲区存储
+        const newLogs = result?.logs || [];
+        logsBufferRef.current.clear();
+        logsBufferRef.current.pushMany(newLogs);
+        setLogsVersion(prev => prev + 1);
         
-        // 更新总数 - 使用后端返回的总数或实际长度
         setPagination(prev => ({ 
           ...prev, 
-          total: result?.length || 0
+          total: result?.total || newLogs.length
         }));
       }
     } catch (error) {
@@ -83,36 +174,26 @@ function LogViewer() {
   useEffect(() => {
     loadLogs();
     
-    // 监听日志更新事件
     if (window.electronAPI && window.electronAPI.onLogUpdate) {
       const unsubscribe = window.electronAPI.onLogUpdate((data) => {
         console.log('收到日志更新:', data);
-        // BUG-4 修复：只有在没有过滤条件时才自动追加新日志
         const hasFilters = filters.level || filters.keyword || filters.startDate || filters.endDate;
+        
         if (autoRefresh && !hasFilters) {
-          setLogs(prev => {
-            const newLogs = [...(data.logs || []), ...prev];
-            // BUG-3 修复：正确的去重逻辑
-            const seen = new Set();
-            const uniqueLogs = newLogs.filter(log => {
-              const key = `${log.timestamp}-${log.message}`;
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            }).slice(0, 1000); // 最多保留 1000 条
-            return uniqueLogs;
-          });
-          // 更新分页总数
-          setPagination(prev => ({ ...prev, total: data.logs?.length || 0 }));
+          // 2. 内存限制：使用环形缓冲区追加新日志
+          const newLogs = data.logs || [];
+          logsBufferRef.current.pushMany(newLogs);
+          setLogsVersion(prev => prev + 1);
+          
+          setPagination(prev => ({ ...prev, total: logsBufferRef.current.length }));
         }
       });
       
       return () => {
-        // 清理监听器
         if (unsubscribe) unsubscribe();
       };
     }
-  }, []); // 只在挂载时执行一次
+  }, []);
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
@@ -135,13 +216,59 @@ function LogViewer() {
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
-  // BUG-2 修复：确保 toggleAutoRefresh 正确设置状态
   const toggleAutoRefresh = () => {
     setAutoRefresh(prev => !prev);
   };
 
   const getLevelClass = (level) => {
     return `log-level ${level.toUpperCase()}`;
+  };
+
+  // 1. 虚拟滚动：渲染可见区域
+  const renderVirtualList = () => {
+    const { visibleLogs, startIndex, totalHeight, offsetY } = virtualScrollData;
+    
+    return (
+      <div 
+        className="virtual-scroll-container"
+        style={{ 
+          height: '600px', 
+          overflow: 'auto',
+          position: 'relative'
+        }}
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+      >
+        <div style={{ height: totalHeight, position: 'relative' }}>
+          <div style={{ 
+            position: 'absolute', 
+            top: offsetY, 
+            left: 0, 
+            right: 0 
+          }}>
+            {visibleLogs.map((log, index) => (
+              <tr 
+                key={`${log.timestamp}-${log.message}-${log.source}-${startIndex + index}`}
+                style={{ height: `${itemHeight}px` }}
+              >
+                <td>{new Date(log.timestamp).toLocaleString()}</td>
+                <td>
+                  <span className={getLevelClass(log.level)}>
+                    {log.level}
+                  </span>
+                </td>
+                <td style={{ fontSize: '12px', color: '#666' }}>
+                  {log.source}
+                </td>
+                <td style={{ fontFamily: 'monospace', fontSize: '13px' }}>
+                  {log.message}
+                </td>
+              </tr>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -218,7 +345,7 @@ function LogViewer() {
         <div className="card-title">
           日志列表 
           <span style={{ fontSize: '12px', color: '#999', marginLeft: '8px' }}>
-            (共 {pagination.total} 条)
+            (共 {logsBufferRef.current.length} 条，缓存上限：{CONFIG.MAX_LOGS_CACHE})
           </span>
         </div>
 
@@ -226,7 +353,7 @@ function LogViewer() {
           <div className="loading">
             <div className="spinner"></div>
           </div>
-        ) : logs.length > 0 ? (
+        ) : logsBufferRef.current.length > 0 ? (
           <>
             <table className="log-table">
               <thead>
@@ -238,23 +365,8 @@ function LogViewer() {
                 </tr>
               </thead>
               <tbody>
-                {/* BUG-1 & BUG-3 修复：使用分页后的数据，key 使用唯一标识 */}
-                {getPaginatedLogs().map((log, index) => (
-                  <tr key={`${log.timestamp}-${log.message}-${log.source}-${index}`}>
-                    <td>{new Date(log.timestamp).toLocaleString()}</td>
-                    <td>
-                      <span className={getLevelClass(log.level)}>
-                        {log.level}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: '12px', color: '#666' }}>
-                      {log.source}
-                    </td>
-                    <td style={{ fontFamily: 'monospace', fontSize: '13px' }}>
-                      {log.message}
-                    </td>
-                  </tr>
-                ))}
+                {/* 1. 虚拟滚动：只渲染可见区域 */}
+                {renderVirtualList()}
               </tbody>
             </table>
 
@@ -268,7 +380,7 @@ function LogViewer() {
               borderTop: '1px solid #eee'
             }}>
               <div style={{ fontSize: '13px', color: '#666' }}>
-                第 {pagination.page} 页，每页 {pagination.pageSize} 条，共 {Math.ceil(pagination.total / pagination.pageSize) || 1} 页
+                第 {pagination.page} 页，每页 {pagination.pageSize} 条，共 {Math.ceil(logsBufferRef.current.length / pagination.pageSize) || 1} 页
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
@@ -276,15 +388,17 @@ function LogViewer() {
                   disabled={pagination.page === 1}
                   onClick={() => {
                     setPagination(prev => ({ ...prev, page: prev.page - 1 }));
+                    setScrollTop(0);
                   }}
                 >
                   上一页
                 </button>
                 <button
                   className="btn"
-                  disabled={pagination.page >= Math.ceil(pagination.total / pagination.pageSize)}
+                  disabled={pagination.page >= Math.ceil(logsBufferRef.current.length / pagination.pageSize)}
                   onClick={() => {
                     setPagination(prev => ({ ...prev, page: prev.page + 1 }));
+                    setScrollTop(0);
                   }}
                 >
                   下一页

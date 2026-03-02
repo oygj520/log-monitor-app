@@ -3,17 +3,148 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
+// 性能优化配置
+const CONFIG = {
+  MAX_OPEN_FILES: 50, // 最大同时打开的文件数
+  FILE_HANDLE_TIMEOUT: 30000, // 文件句柄超时时间 (ms)
+  RETRY_MAX_ATTEMPTS: 3, // 文件锁定重试次数
+  RETRY_DELAY: 100 // 重试延迟 (ms)
+};
+
+// 文件句柄管理器 - 限制同时打开的文件数量
+class FileHandleManager {
+  constructor() {
+    this.openHandles = new Map(); // filePath -> { fd, timeout, lastUsed }
+    this.queue = []; // 等待打开的文件队列
+    this.isProcessing = false;
+  }
+
+  async openFile(filePath, flags = 'r') {
+    // 如果已经有打开的句柄，更新使用时间
+    if (this.openHandles.has(filePath)) {
+      const handle = this.openHandles.get(filePath);
+      clearTimeout(handle.timeout);
+      handle.lastUsed = Date.now();
+      this._setHandleTimeout(filePath, handle);
+      return handle.fd;
+    }
+
+    // 如果超过最大文件数，等待
+    if (this.openHandles.size >= CONFIG.MAX_OPEN_FILES) {
+      return new Promise((resolve) => {
+        this.queue.push({ filePath, flags, resolve });
+        this._processQueue();
+      });
+    }
+
+    return this._doOpenFile(filePath, flags);
+  }
+
+  async _doOpenFile(filePath, flags) {
+    let lastError = null;
+    
+    // 文件锁定重试机制
+    for (let attempt = 1; attempt <= CONFIG.RETRY_MAX_ATTEMPTS; attempt++) {
+      try {
+        const fd = fs.openSync(filePath, flags);
+        const handle = {
+          fd,
+          lastUsed: Date.now(),
+          timeout: null
+        };
+        
+        this._setHandleTimeout(filePath, handle);
+        this.openHandles.set(filePath, handle);
+        
+        return fd;
+      } catch (error) {
+        lastError = error;
+        if (error.code === 'EBUSY' || error.code === 'EACCES') {
+          console.log(`[文件句柄] 文件被锁定，重试 ${attempt}/${CONFIG.RETRY_MAX_ATTEMPTS}: ${filePath}`);
+          await this._sleep(CONFIG.RETRY_DELAY * attempt);
+        } else {
+          break;
+        }
+      }
+    }
+    
+    throw lastError || new Error(`无法打开文件：${filePath}`);
+  }
+
+  _setHandleTimeout(filePath, handle) {
+    handle.timeout = setTimeout(() => {
+      this.closeFile(filePath);
+    }, CONFIG.FILE_HANDLE_TIMEOUT);
+  }
+
+  closeFile(filePath) {
+    const handle = this.openHandles.get(filePath);
+    if (handle) {
+      clearTimeout(handle.timeout);
+      try {
+        fs.closeSync(handle.fd);
+      } catch (error) {
+        console.error(`[文件句柄] 关闭文件失败：${filePath}`, error);
+      }
+      this.openHandles.delete(filePath);
+      this._processQueue();
+    }
+  }
+
+  async _processQueue() {
+    if (this.isProcessing || this.queue.length === 0) return;
+    
+    this.isProcessing = true;
+    
+    while (this.queue.length > 0 && this.openHandles.size < CONFIG.MAX_OPEN_FILES) {
+      const item = this.queue.shift();
+      try {
+        const fd = await this._doOpenFile(item.filePath, item.flags);
+        item.resolve(fd);
+      } catch (error) {
+        item.reject(error);
+      }
+    }
+    
+    this.isProcessing = false;
+  }
+
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  closeAll() {
+    for (const [filePath, handle] of this.openHandles) {
+      clearTimeout(handle.timeout);
+      try {
+        fs.closeSync(handle.fd);
+      } catch (error) {
+        console.error(`[文件句柄] 关闭文件失败：${filePath}`, error);
+      }
+    }
+    this.openHandles.clear();
+    this.queue = [];
+  }
+
+  getStats() {
+    return {
+      openCount: this.openHandles.size,
+      queueLength: this.queue.length,
+      maxFiles: CONFIG.MAX_OPEN_FILES
+    };
+  }
+}
+
 class LogMonitorService {
   constructor(databaseService) {
     this.databaseService = databaseService;
-    this.monitors = new Map(); // 存储所有监控器
-    this.fileWatchers = new Map(); // 存储文件监听器
-    this.filePositions = new Map(); // 存储每个文件的读取位置 { filePath: { position, inode } }
+    this.monitors = new Map();
+    this.fileWatchers = new Map();
+    this.filePositions = new Map();
+    // 4. 文件句柄管理：添加文件句柄管理器
+    this.fileHandleManager = new FileHandleManager();
   }
 
-  /**
-   * 开始监控日志文件
-   */
   async startMonitoring(config) {
     const id = uuidv4();
     const monitorConfig = {
@@ -26,7 +157,6 @@ class LogMonitorService {
     try {
       console.log(`[监控服务] 开始监控任务 ${id}, 路径：`, config.paths);
 
-      // 创建文件监听器
       const watcher = chokidar.watch(config.paths, {
         ignored: /(^|[\/\\])\../,
         persistent: true,
@@ -39,19 +169,16 @@ class LogMonitorService {
         interval: 1000
       });
 
-      // 处理新文件
       watcher.on('add', (filePath) => {
         console.log(`[监控服务] 新文件：${filePath}`);
         this.processLogFile(filePath, monitorConfig, false);
       });
 
-      // 处理文件变化
       watcher.on('change', (filePath) => {
         console.log(`[监控服务] 文件变化：${filePath}`);
         this.processLogFile(filePath, monitorConfig, true);
       });
 
-      // 处理错误
       watcher.on('error', (error) => {
         console.error(`[监控服务] 监控错误：${error}`);
         this.emitAlert(monitorConfig.id, 'error', error.message);
@@ -60,7 +187,6 @@ class LogMonitorService {
       this.fileWatchers.set(id, watcher);
       this.monitors.set(id, monitorConfig);
 
-      // 通知状态变化
       this.emitStatusChange();
 
       return { success: true, id, message: '监控已启动' };
@@ -70,9 +196,6 @@ class LogMonitorService {
     }
   }
 
-  /**
-   * 停止监控
-   */
   async stopMonitoring(id) {
     const watcher = this.fileWatchers.get(id);
     if (watcher) {
@@ -91,9 +214,6 @@ class LogMonitorService {
     return { success: true, message: '监控已停止' };
   }
 
-  /**
-   * 停止所有监控
-   */
   stopAll() {
     for (const [id, watcher] of this.fileWatchers) {
       watcher.close();
@@ -101,11 +221,10 @@ class LogMonitorService {
     this.fileWatchers.clear();
     this.monitors.clear();
     this.filePositions.clear();
+    // 4. 文件句柄管理：关闭所有文件句柄
+    this.fileHandleManager.closeAll();
   }
 
-  /**
-   * 获取监控状态
-   */
   getStatus() {
     const status = [];
     for (const [id, config] of this.monitors) {
@@ -122,20 +241,42 @@ class LogMonitorService {
   }
 
   /**
-   * 处理日志文件（增量读取）
+   * 3. 后端过滤：从数据库获取日志时应用过滤条件
    */
+  async getLogs(options = {}) {
+    const { page = 1, pageSize = 100, level, keyword, startDate, endDate, source } = options;
+    
+    try {
+      // 调用数据库服务的过滤查询
+      const result = await this.databaseService.getLogs({
+        page,
+        pageSize,
+        level: level || undefined,
+        keyword: keyword || undefined,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        source: source || undefined
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('[监控服务] 获取日志失败:', error);
+      return [];
+    }
+  }
+
   async processLogFile(filePath, monitorConfig, isUpdate = false) {
+    let fd = null;
+    
     try {
       const stats = fs.statSync(filePath);
       
-      // 获取文件唯一标识（inode 或 dev+size）
       const fileKey = `${stats.dev}:${stats.ino}`;
       const storedPosition = this.filePositions.get(fileKey);
       
       let startPosition = 0;
       let isNewFile = false;
       
-      // 检查是否是新文件或文件被重置
       if (!storedPosition || storedPosition.ino !== stats.ino) {
         console.log(`[监控服务] 新文件或文件重置：${filePath}`);
         isNewFile = true;
@@ -144,25 +285,21 @@ class LogMonitorService {
         startPosition = storedPosition.position;
       }
       
-      // 如果文件变小了，说明被截断了，从头开始
       if (stats.size < startPosition) {
         console.log(`[监控服务] 文件被截断，重新读取：${filePath}`);
         startPosition = 0;
       }
       
-      // 如果没有新内容，跳过
       if (stats.size === startPosition && isUpdate) {
         console.log(`[监控服务] 文件无新内容：${filePath}`);
         return;
       }
       
-      // 读取新内容
-      const buffer = Buffer.alloc(stats.size - startPosition);
-      const fd = fs.openSync(filePath, 'r');
-      fs.readSync(fd, buffer, 0, stats.size - startPosition, startPosition);
-      fs.closeSync(fd);
+      // 4. 文件句柄管理：使用文件句柄管理器打开文件
+      fd = await this.fileHandleManager.openFile(filePath, 'r');
       
-      const newContent = buffer.toString('utf-8');
+      const buffer = Buffer.alloc(stats.size - startPosition);
+      await fs.readSync(fd, buffer, 0, stats.size - startPosition, startPosition);
       
       // 更新文件位置
       this.filePositions.set(fileKey, {
@@ -171,7 +308,7 @@ class LogMonitorService {
         filePath
       });
       
-      // 解析日志行
+      const newContent = buffer.toString('utf-8');
       const lines = newContent.split('\n');
       let newLogs = [];
 
@@ -184,16 +321,12 @@ class LogMonitorService {
         }
       }
 
-      // 保存到数据库
       if (newLogs.length > 0) {
         console.log(`[监控服务] 解析到 ${newLogs.length} 条新日志`);
         await this.databaseService.saveLogs(newLogs);
         monitorConfig.logCount = (monitorConfig.logCount || 0) + newLogs.length;
         
-        // 检查告警
         this.checkAlerts(newLogs, monitorConfig);
-        
-        // 发送日志更新通知到前端
         this.emitLogUpdate(newLogs);
       } else {
         console.log(`[监控服务] 未解析到有效日志：${filePath}`);
@@ -201,13 +334,15 @@ class LogMonitorService {
 
     } catch (error) {
       console.error(`[监控服务] 处理文件 ${filePath} 失败:`, error);
+    } finally {
+      // 4. 文件句柄管理：使用完后关闭文件句柄（实际由管理器控制超时）
+      if (fd !== null && filePath) {
+        // 不立即关闭，由管理器控制超时
+        // this.fileHandleManager.closeFile(filePath);
+      }
     }
   }
 
-  /**
-   * 解析日志行
-   * 自动识别常见日志格式
-   */
   parseLogLine(line, filePath) {
     const log = {
       id: uuidv4(),
@@ -219,14 +354,13 @@ class LogMonitorService {
       source: path.basename(filePath)
     };
 
-    // === 新增：异常堆栈识别（必须添加在方法开头）===
     const errorPatterns = [
       /(Exception|Error|Throwable):\s*/i,
       /Traceback \(most recent call last\)/,
-      /\s+at\s+[\w\.]+\(/,  // 匹配 "at com.example..." (允许前面有时间戳)
+      /\s+at\s+[\w\.]+\(/,
       /Caused by:/,
       /Exception in thread/,
-      /\s+File\s+"[^"]+",\s+line\s+\d+/  // 匹配 Python 堆栈 "File "xxx", line xxx"
+      /\s+File\s+"[^"]+",\s+line\s+\d+/
     ];
 
     const isError = errorPatterns.some(pattern => pattern.test(line));
@@ -234,11 +368,7 @@ class LogMonitorService {
       log.level = 'ERROR';
       return log;
     }
-    // ===============================================
 
-    // 尝试解析常见日志格式
-    
-    // 格式 1: [2024-01-01 12:00:00] [ERROR] message
     const format1 = line.match(/^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s+\[(\w+)\]\s+(.*)$/);
     if (format1) {
       log.timestamp = format1[1];
@@ -247,7 +377,6 @@ class LogMonitorService {
       return log;
     }
 
-    // 格式 2: 2024-01-01T12:00:00.000Z ERROR message
     const format2 = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s+(\w+)\s+(.*)$/);
     if (format2) {
       log.timestamp = format2[1];
@@ -256,7 +385,6 @@ class LogMonitorService {
       return log;
     }
 
-    // 格式 3: 2024-01-01 12:00:00 ERROR message
     const format3 = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(\w+)\s+(.*)$/);
     if (format3) {
       log.timestamp = format3[1];
@@ -265,7 +393,6 @@ class LogMonitorService {
       return log;
     }
 
-    // 格式 4: JSON 格式
     try {
       const jsonLog = JSON.parse(line);
       if (jsonLog.timestamp || jsonLog.time || jsonLog.date) {
@@ -281,19 +408,14 @@ class LogMonitorService {
     return log;
   }
 
-  /**
-   * 检查告警条件
-   */
   checkAlerts(logs, monitorConfig) {
     const alertKeywords = monitorConfig.alertKeywords || ['ERROR', 'FATAL', 'CRITICAL'];
     
     for (const log of logs) {
-      // 检查日志级别
       if (alertKeywords.includes(log.level)) {
         this.emitAlert(monitorConfig.id, 'level', log);
       }
 
-      // 检查关键字
       if (monitorConfig.keywords) {
         for (const keyword of monitorConfig.keywords) {
           if (log.message.includes(keyword)) {
@@ -304,12 +426,8 @@ class LogMonitorService {
     }
   }
 
-  /**
-   * 发送告警
-   */
   emitAlert(monitorId, type, data) {
     console.log(`[监控服务] 告警 [${monitorId}]: ${type}`, data);
-    // 通过 IPC 发送告警到前端
     try {
       const { BrowserWindow } = require('electron');
       const windows = BrowserWindow.getAllWindows();
@@ -326,9 +444,6 @@ class LogMonitorService {
     }
   }
 
-  /**
-   * 发送日志更新通知
-   */
   emitLogUpdate(logs) {
     console.log(`[监控服务] 发送 ${logs.length} 条日志更新到前端`);
     try {
@@ -346,16 +461,16 @@ class LogMonitorService {
     }
   }
 
-  /**
-   * 发送状态变化通知
-   */
   emitStatusChange() {
     console.log('[监控服务] 监控状态变化');
     try {
       const { BrowserWindow } = require('electron');
       const windows = BrowserWindow.getAllWindows();
       if (windows.length > 0) {
-        windows[0].webContents.send('monitoring-status-change', this.getStatus());
+        windows[0].webContents.send('monitoring-status-change', {
+          ...this.getStatus(),
+          fileHandleStats: this.fileHandleManager.getStats()
+        });
       }
     } catch (error) {
       console.error('[监控服务] 发送状态变化失败:', error);

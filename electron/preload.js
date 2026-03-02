@@ -38,6 +38,43 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMonitoringStatusChange: (callback) => {
     ipcRenderer.on('monitoring-status-change', (event, data) => callback(data));
+  },
+  onArchiveComplete: (callback) => {
+    ipcRenderer.on('archive-complete', (event, data) => callback(data));
+  },
+  
+  // 告警管理
+  getAlertHistory: (options) => ipcRenderer.invoke('get-alert-history', options),
+  getAlertStatistics: (startDate, endDate) => ipcRenderer.invoke('get-alert-statistics', startDate, endDate),
+  acknowledgeAlert: (alertId) => ipcRenderer.invoke('acknowledge-alert', alertId),
+  exportAlertRules: () => ipcRenderer.invoke('export-alert-rules'),
+  importAlertRules: (jsonString) => ipcRenderer.invoke('import-alert-rules', jsonString),
+  
+  // 归档管理
+  getArchiveList: () => ipcRenderer.invoke('get-archive-list'),
+  queryArchiveLogs: (archiveId, options) => ipcRenderer.invoke('query-archive-logs', archiveId, options),
+  getArchiveStatistics: () => ipcRenderer.invoke('get-archive-statistics'),
+  triggerArchive: (daysToKeep) => ipcRenderer.invoke('trigger-archive', daysToKeep),
+  deleteArchive: (archiveId) => ipcRenderer.invoke('delete-archive', archiveId),
+  
+  // 增量查询
+  getIncrementalLogs: (options) => ipcRenderer.invoke('get-incremental-logs', options),
+  
+  // 系统
+  cleanup: () => ipcRenderer.invoke('cleanup'),
+  
+  // API 服务
+  getApiStatus: () => ipcRenderer.invoke('get-api-status'),
+  updateApiConfig: (config) => ipcRenderer.invoke('update-api-config', config),
+  triggerWebhook: (eventData) => ipcRenderer.invoke('trigger-webhook', eventData),
+  
+  // 高可用
+  getHealthStatus: () => ipcRenderer.invoke('get-health-status'),
+  backupConfig: () => ipcRenderer.invoke('backup-config'),
+  
+  // 健康状态监听
+  onHealthStatus: (callback) => {
+    ipcRenderer.on('health-status', (event, data) => callback(data));
   }
 });
 

@@ -489,3 +489,268 @@ input, textarea, select, button {
     transform: rotate(360deg);
   }
 }
+
+/* ============================================
+   深色主题支持
+   ============================================ */
+
+body.dark-mode {
+  background-color: #141414;
+  color: #e8e8e8;
+}
+
+body.dark-mode .app-header {
+  background: linear-gradient(135deg, #1f1f1f 0%, #2d2d2d 100%);
+}
+
+body.dark-mode .card {
+  background: #1f1f1f;
+  border-color: #333;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+body.dark-mode .card-title {
+  color: #e8e8e8;
+  border-color: #333;
+}
+
+body.dark-mode .stat-card {
+  background: #1f1f1f;
+  color: #e8e8e8;
+}
+
+body.dark-mode .monitor-item {
+  border-color: #333;
+  background: #252525;
+}
+
+body.dark-mode .alert-banner {
+  background: #2a1f1f;
+  border-color: #5c2b2b;
+}
+
+body.dark-mode .log-entry {
+  border-color: #333;
+}
+
+body.dark-mode .log-entry:hover {
+  background: #252525;
+}
+
+body.dark-mode .log-level {
+  background: #333;
+  color: #e8e8e8;
+}
+
+body.dark-mode .log-level.ERROR,
+body.dark-mode .log-level.FATAL,
+body.dark-mode .log-level.CRITICAL {
+  background: rgba(245, 34, 45, 0.2);
+  color: #ff7875;
+}
+
+body.dark-mode .log-level.WARN {
+  background: rgba(250, 140, 22, 0.2);
+  color: #ffc53d;
+}
+
+body.dark-mode .log-level.INFO {
+  background: rgba(24, 144, 255, 0.2);
+  color: #69c0ff;
+}
+
+body.dark-mode .log-level.DEBUG {
+  background: rgba(82, 196, 26, 0.2);
+  color: #95de64;
+}
+
+body.dark-mode .form-input,
+body.dark-mode .form-select,
+body.dark-mode .form-textarea {
+  background: #252525;
+  border-color: #434343;
+  color: #e8e8e8;
+}
+
+body.dark-mode .form-input:focus,
+body.dark-mode .form-select:focus,
+body.dark-mode .form-textarea:focus {
+  border-color: #1890ff;
+  background: #252525;
+}
+
+body.dark-mode .btn {
+  background: #252525;
+  border-color: #434343;
+  color: #e8e8e8;
+}
+
+body.dark-mode .btn:hover {
+  background: #333;
+  border-color: #1890ff;
+}
+
+body.dark-mode .btn-primary {
+  background: #1890ff;
+  border-color: #1890ff;
+  color: white;
+}
+
+body.dark-mode .btn-primary:hover {
+  background: #40a9ff;
+}
+
+body.dark-mode .btn-danger {
+  background: #f5222d;
+  border-color: #f5222d;
+  color: white;
+}
+
+body.dark-mode .btn-success {
+  background: #52c41a;
+  border-color: #52c41a;
+  color: white;
+}
+
+body.dark-mode table {
+  background: #1f1f1f;
+}
+
+body.dark-mode table th {
+  background: #252525;
+  border-color: #333;
+  color: #e8e8e8;
+}
+
+body.dark-mode table td {
+  border-color: #333;
+  color: #e8e8e8;
+}
+
+body.dark-mode table tr:hover {
+  background: #252525;
+}
+
+body.dark-mode .empty-state {
+  color: #666;
+}
+
+body.dark-mode .empty-state-icon {
+  opacity: 0.5;
+}
+
+body.dark-mode ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+body.dark-mode ::-webkit-scrollbar-track {
+  background: #1f1f1f;
+}
+
+body.dark-mode ::-webkit-scrollbar-thumb {
+  background: #434343;
+  border-radius: 4px;
+}
+
+body.dark-mode ::-webkit-scrollbar-thumb:hover {
+  background: #595959;
+}
+
+body.dark-mode .modal-overlay {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+body.dark-mode .modal {
+  background: #1f1f1f;
+  color: #e8e8e8;
+}
+
+body.dark-mode .config-item {
+  border-color: #333;
+  background: #252525;
+}
+
+body.dark-mode .config-label {
+  color: #e8e8e8;
+}
+
+body.dark-mode .config-value {
+  color: #e8e8e8;
+}
+
+body.dark-mode .monitor-status {
+  color: #e8e8e8;
+}
+
+body.dark-mode .monitor-status.running {
+  color: #52c41a;
+}
+
+body.dark-mode .monitor-status.stopped {
+  color: #ff4d4f;
+}
+
+body.dark-mode .alert-item {
+  border-color: #333;
+  background: #252525;
+}
+
+body.dark-mode .alert-item.unacknowledged {
+  border-left-color: #f5222d;
+}
+
+body.dark-mode .archive-item {
+  border-color: #333;
+  background: #252525;
+}
+
+/* 统计页面深色主题 */
+body.dark-mode .statistics-page .control-bar {
+  background: #1f1f1f;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+body.dark-mode .statistics-page select {
+  background: #252525;
+  border-color: #434343;
+  color: #e8e8e8;
+}
+
+body.dark-mode .statistics-page table th {
+  background: #252525;
+}
+
+body.dark-mode .statistics-page table td {
+  color: #e8e8e8;
+}
+
+/* 日志查看器深色主题 */
+body.dark-mode .log-viewer {
+  background: #141414;
+}
+
+body.dark-mode .log-viewer-controls {
+  background: #1f1f1f;
+  border-color: #333;
+}
+
+body.dark-mode .log-stream-indicator {
+  background: #252525;
+  border-color: #434343;
+}
+
+body.dark-mode .bookmark-item {
+  background: #252525;
+  border-color: #434343;
+  color: #e8e8e8;
+}
+
+/* 动画过渡 */
+body.dark-mode {
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body.dark-mode * {
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}

@@ -7,7 +7,15 @@ function Settings() {
     minimizeToTray: true,
     notificationEnabled: true,
     logRetentionDays: 30,
-    refreshInterval: 5
+    refreshInterval: 5,
+    // 告警配置
+    alertEnabled: true,
+    alertSound: true,
+    alertDesktopNotification: true,
+    // 归档配置
+    archiveEnabled: true,
+    archiveDaysToKeep: 7,
+    archiveSchedule: 'daily' // daily, weekly, manual
   });
   const [systemInfo, setSystemInfo] = useState({
     appPath: '',
@@ -209,6 +217,92 @@ function Settings() {
             max="60"
           />
           <div className="form-help">仪表盘和日志列表的自动刷新间隔（1-60 秒）</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">告警配置</div>
+        
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={settings.alertEnabled}
+              onChange={(e) => setSettings(prev => ({ ...prev, alertEnabled: e.target.checked }))}
+            />
+            启用告警系统
+          </label>
+          <div className="form-help">关闭后将不会触发任何告警</div>
+        </div>
+
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={settings.alertSound}
+              onChange={(e) => setSettings(prev => ({ ...prev, alertSound: e.target.checked }))}
+              disabled={!settings.alertEnabled}
+            />
+            告警提示音
+          </label>
+        </div>
+
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={settings.alertDesktopNotification}
+              onChange={(e) => setSettings(prev => ({ ...prev, alertDesktopNotification: e.target.checked }))}
+              disabled={!settings.alertEnabled}
+            />
+            桌面通知推送
+          </label>
+          <div className="form-help">使用 Windows 系统通知显示告警</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">归档配置</div>
+        
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={settings.archiveEnabled}
+              onChange={(e) => setSettings(prev => ({ ...prev, archiveEnabled: e.target.checked }))}
+            />
+            启用自动归档
+          </label>
+          <div className="form-help">每天凌晨 2 点自动归档旧日志</div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">归档前保留天数</label>
+          <input
+            type="number"
+            className="form-input"
+            value={settings.archiveDaysToKeep}
+            onChange={(e) => setSettings(prev => ({ ...prev, archiveDaysToKeep: parseInt(e.target.value) || 7 }))}
+            min="1"
+            max="90"
+            disabled={!settings.archiveEnabled}
+          />
+          <div className="form-help">超过此天数的日志将被归档（1-90 天）</div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">归档频率</label>
+          <select
+            className="form-input"
+            value={settings.archiveSchedule}
+            onChange={(e) => setSettings(prev => ({ ...prev, archiveSchedule: e.target.value }))}
+            disabled={!settings.archiveEnabled}
+          >
+            <option value="daily">每天</option>
+            <option value="weekly">每周</option>
+            <option value="manual">仅手动</option>
+          </select>
+          <div className="form-help">选择自动归档的执行频率</div>
         </div>
       </div>
 

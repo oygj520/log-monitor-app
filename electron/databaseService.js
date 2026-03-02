@@ -2,6 +2,8 @@ const initSqlJs = require('sql.js');
 const PathManager = require('./pathManager');
 const path = require('path');
 const fs = require('fs');
+const zlib = require('zlib');
+const crypto = require('crypto');
 
 class DatabaseService {
   constructor() {
@@ -115,6 +117,35 @@ class DatabaseService {
       CREATE INDEX IF NOT EXISTS idx_alerts_monitorId ON alerts(monitorId);
       CREATE INDEX IF NOT EXISTS idx_alerts_createdAt ON alerts(createdAt);
     `);
+
+    // 归档元数据表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS archive_metadata (
+        id TEXT PRIMARY KEY,
+        originalCount INTEGER NOT NULL,
+        startDate TEXT NOT NULL,
+        endDate TEXT NOT NULL,
+        archivePath TEXT NOT NULL,
+        compressedSize INTEGER NOT NULL,
+        originalSize INTEGER NOT NULL,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        checksum TEXT
+      )
+    `);
+
+    // 增量查询状态表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS query_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 初始化增量查询状态
+    this.db.exec(`
+      INSERT OR IGNORE INTO query_state (key, value) VALUES ('last_log_timestamp', '1970-01-01 00:00:00')
+    `);
   }
 
   /**
@@ -142,10 +173,10 @@ class DatabaseService {
   }
 
   /**
-   * 查询日志
+   * 查询日志（支持后端过滤和分页）
    */
   getLogs(options = {}) {
-    if (!this.db) return [];
+    if (!this.db) return { logs: [], total: 0 };
 
     const {
       page = 1,
@@ -158,9 +189,9 @@ class DatabaseService {
       filePath
     } = options;
 
-    let query = 'SELECT * FROM logs WHERE 1=1';
+    // 构建 WHERE 子句
     const conditions = [];
-
+    
     if (level) {
       conditions.push(`level = '${level}'`);
     }
@@ -185,14 +216,17 @@ class DatabaseService {
       conditions.push(`filePath LIKE '%${filePath}%'`);
     }
 
-    if (conditions.length > 0) {
-      query += ' AND ' + conditions.join(' AND ');
-    }
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
-    query += ' ORDER BY timestamp DESC';
-    query += ` LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
+    // 获取总数
+    const countQuery = `SELECT COUNT(*) as count FROM logs ${whereClause}`;
+    const countStmt = this.db.prepare(countQuery);
+    const total = countStmt.step() ? countStmt.getAsObject().count : 0;
+    countStmt.free();
 
-    const stmt = this.db.prepare(query);
+    // 获取分页数据
+    const dataQuery = `SELECT * FROM logs ${whereClause} ORDER BY timestamp DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
+    const stmt = this.db.prepare(dataQuery);
     const results = [];
     
     while (stmt.step()) {
@@ -200,7 +234,8 @@ class DatabaseService {
     }
     stmt.free();
 
-    return results;
+    // 3. 后端过滤：返回过滤后的数据和总数
+    return { logs: results, total };
   }
 
   /**
@@ -376,6 +411,372 @@ class DatabaseService {
     stmt.free();
 
     return results;
+  }
+
+  /**
+   * 增量查询日志（只查询新增的日志）
+   */
+  getIncrementalLogs(options = {}) {
+    if (!this.db) return { logs: [], hasMore: false };
+
+    const {
+      lastTimestamp = null,
+      pageSize = 100,
+      monitorId = null
+    } = options;
+
+    // 如果没有指定时间戳，从状态表获取
+    let queryTimestamp = lastTimestamp;
+    if (!queryTimestamp) {
+      const stmt = this.db.prepare("SELECT value FROM query_state WHERE key = 'last_log_timestamp'");
+      if (stmt.step()) {
+        queryTimestamp = stmt.getAsObject().value;
+      }
+      stmt.free();
+    }
+
+    let query = 'SELECT * FROM logs WHERE timestamp > ?';
+    const params = [queryTimestamp];
+
+    if (monitorId) {
+      query += ' AND source = ?';
+      params.push(monitorId);
+    }
+
+    query += ' ORDER BY timestamp ASC';
+    query += ` LIMIT ${pageSize}`;
+
+    const stmt = this.db.prepare(query);
+    stmt.bind(params);
+    
+    const logs = [];
+    let maxTimestamp = queryTimestamp;
+    
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      logs.push(row);
+      if (row.timestamp > maxTimestamp) {
+        maxTimestamp = row.timestamp;
+      }
+    }
+    stmt.free();
+
+    // 更新最后查询时间戳
+    if (logs.length > 0) {
+      this.updateQueryState('last_log_timestamp', maxTimestamp);
+    }
+
+    // 检查是否还有更多数据
+    const countQuery = 'SELECT COUNT(*) as count FROM logs WHERE timestamp > ?';
+    const countStmt = this.db.prepare(countQuery);
+    countStmt.bind([maxTimestamp]);
+    let hasMore = false;
+    if (countStmt.step()) {
+      hasMore = countStmt.getAsObject().count > 0;
+    }
+    countStmt.free();
+
+    return { logs, hasMore, lastTimestamp: maxTimestamp };
+  }
+
+  /**
+   * 更新查询状态
+   */
+  updateQueryState(key, value) {
+    if (!this.db) return;
+
+    try {
+      this.db.exec(`
+        INSERT OR REPLACE INTO query_state (key, value, updatedAt)
+        VALUES ('${key}', '${value}', CURRENT_TIMESTAMP)
+      `);
+      this.saveDatabase();
+    } catch (error) {
+      console.error('更新查询状态失败:', error);
+    }
+  }
+
+  /**
+   * 获取查询状态
+   */
+  getQueryState(key) {
+    if (!this.db) return null;
+
+    const stmt = this.db.prepare(`SELECT value FROM query_state WHERE key = '${key}'`);
+    let value = null;
+    if (stmt.step()) {
+      value = stmt.getAsObject().value;
+    }
+    stmt.free();
+    return value;
+  }
+
+  /**
+   * 归档旧日志（超过指定天数的日志）
+   */
+  async archiveOldLogs(daysToKeep = 7) {
+    if (!this.db) return { success: false, error: '数据库未初始化' };
+
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+
+      console.log(`[归档服务] 开始归档 ${cutoffDateStr} 之前的日志`);
+
+      // 查询需要归档的日志
+      const archiveQuery = `SELECT * FROM logs WHERE timestamp < '${cutoffDateStr}' ORDER BY timestamp`;
+      const logsToArchive = this.executeQuery(archiveQuery);
+
+      if (logsToArchive.length === 0) {
+        console.log('[归档服务] 没有需要归档的日志');
+        return { success: true, archived: 0, message: '没有需要归档的日志' };
+      }
+
+      console.log(`[归档服务] 找到 ${logsToArchive.length} 条日志需要归档`);
+
+      // 创建归档文件
+      const archiveResult = await this.createArchiveFile(logsToArchive, cutoffDateStr);
+
+      if (!archiveResult.success) {
+        return archiveResult;
+      }
+
+      // 从数据库中删除已归档的日志
+      this.db.exec(`DELETE FROM logs WHERE timestamp < '${cutoffDateStr}'`);
+      this.saveDatabase();
+
+      // 保存归档元数据
+      this.saveArchiveMetadata({
+        id: archiveResult.archiveId,
+        originalCount: logsToArchive.length,
+        startDate: logsToArchive[0]?.timestamp || cutoffDateStr,
+        endDate: logsToArchive[logsToArchive.length - 1]?.timestamp || cutoffDateStr,
+        archivePath: archiveResult.archivePath,
+        compressedSize: archiveResult.compressedSize,
+        originalSize: archiveResult.originalSize,
+        checksum: archiveResult.checksum
+      });
+
+      console.log(`[归档服务] 归档完成：${logsToArchive.length} 条日志，压缩比：${((archiveResult.compressedSize / archiveResult.originalSize) * 100).toFixed(2)}%`);
+
+      return {
+        success: true,
+        archived: logsToArchive.length,
+        archivePath: archiveResult.archivePath,
+        compressedSize: archiveResult.compressedSize,
+        originalSize: archiveResult.originalSize
+      };
+    } catch (error) {
+      console.error('[归档服务] 归档失败:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 创建归档文件
+   */
+  async createArchiveFile(logs, cutoffDateStr) {
+    try {
+      const archiveDir = path.join(PathManager.getDataDir(), 'archives');
+      
+      // 确保归档目录存在
+      if (!fs.existsSync(archiveDir)) {
+        fs.mkdirSync(archiveDir, { recursive: true });
+      }
+
+      // 生成归档文件名
+      const dateStr = cutoffDateStr.split(' ')[0].replace(/-/g, '');
+      const timestamp = Date.now();
+      const archiveId = `archive_${dateStr}_${timestamp}`;
+      const archivePath = path.join(archiveDir, `${archiveId}.json.gz`);
+
+      // 序列化日志数据
+      const jsonData = JSON.stringify(logs, null, 2);
+      const originalSize = Buffer.byteLength(jsonData, 'utf-8');
+
+      // 压缩数据
+      const compressed = zlib.gzipSync(Buffer.from(jsonData));
+      const compressedSize = compressed.length;
+
+      // 写入归档文件
+      fs.writeFileSync(archivePath, compressed);
+
+      // 计算校验和
+      const checksum = crypto.createHash('md5').update(compressed).digest('hex');
+
+      console.log(`[归档服务] 创建归档文件：${archivePath}`);
+
+      return {
+        success: true,
+        archiveId,
+        archivePath,
+        compressedSize,
+        originalSize,
+        checksum
+      };
+    } catch (error) {
+      console.error('[归档服务] 创建归档文件失败:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 保存归档元数据
+   */
+  saveArchiveMetadata(metadata) {
+    if (!this.db) return;
+
+    try {
+      this.db.exec(`
+        INSERT INTO archive_metadata 
+        (id, originalCount, startDate, endDate, archivePath, compressedSize, originalSize, checksum)
+        VALUES ('${metadata.id}', ${metadata.originalCount}, '${metadata.startDate}', '${metadata.endDate}', '${metadata.archivePath}', ${metadata.compressedSize}, ${metadata.originalSize}, '${metadata.checksum}')
+      `);
+      this.saveDatabase();
+    } catch (error) {
+      console.error('保存归档元数据失败:', error);
+    }
+  }
+
+  /**
+   * 获取归档列表
+   */
+  getArchiveList() {
+    if (!this.db) return [];
+
+    const query = 'SELECT * FROM archive_metadata ORDER BY createdAt DESC';
+    return this.executeQuery(query);
+  }
+
+  /**
+   * 查询归档日志
+   */
+  queryArchiveLogs(archiveId, options = {}) {
+    try {
+      // 获取归档元数据
+      const metadataStmt = this.db.prepare(`SELECT * FROM archive_metadata WHERE id = '${archiveId}'`);
+      let metadata = null;
+      if (metadataStmt.step()) {
+        metadata = metadataStmt.getAsObject();
+      }
+      metadataStmt.free();
+
+      if (!metadata) {
+        return { success: false, error: '归档不存在' };
+      }
+
+      // 读取并解压归档文件
+      if (!fs.existsSync(metadata.archivePath)) {
+        return { success: false, error: '归档文件不存在' };
+      }
+
+      const compressed = fs.readFileSync(metadata.archivePath);
+      const decompressed = zlib.gunzipSync(compressed);
+      const logs = JSON.parse(decompressed.toString('utf-8'));
+
+      // 应用过滤条件
+      let filteredLogs = logs;
+      const { level, keyword, page = 1, pageSize = 100 } = options;
+
+      if (level) {
+        filteredLogs = filteredLogs.filter(log => log.level === level);
+      }
+
+      if (keyword) {
+        filteredLogs = filteredLogs.filter(log => 
+          log.message && log.message.toLowerCase().includes(keyword.toLowerCase())
+        );
+      }
+
+      // 分页
+      const startIndex = (page - 1) * pageSize;
+      const endIndex = startIndex + pageSize;
+      const paginatedLogs = filteredLogs.slice(startIndex, endIndex);
+
+      return {
+        success: true,
+        logs: paginatedLogs,
+        total: filteredLogs.length,
+        page,
+        pageSize,
+        metadata: {
+          id: metadata.id,
+          startDate: metadata.startDate,
+          endDate: metadata.endDate,
+          originalCount: metadata.originalCount,
+          compressedSize: metadata.compressedSize,
+          createdAt: metadata.createdAt
+        }
+      };
+    } catch (error) {
+      console.error('[归档服务] 查询归档日志失败:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 删除归档
+   */
+  deleteArchive(archiveId) {
+    try {
+      // 获取归档元数据
+      const metadataStmt = this.db.prepare(`SELECT * FROM archive_metadata WHERE id = '${archiveId}'`);
+      let metadata = null;
+      if (metadataStmt.step()) {
+        metadata = metadataStmt.getAsObject();
+      }
+      metadataStmt.free();
+
+      if (!metadata) {
+        return { success: false, error: '归档不存在' };
+      }
+
+      // 删除归档文件
+      if (fs.existsSync(metadata.archivePath)) {
+        fs.unlinkSync(metadata.archivePath);
+      }
+
+      // 删除元数据
+      this.db.exec(`DELETE FROM archive_metadata WHERE id = '${archiveId}'`);
+      this.saveDatabase();
+
+      console.log(`[归档服务] 删除归档：${archiveId}`);
+      return { success: true };
+    } catch (error) {
+      console.error('[归档服务] 删除归档失败:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 获取归档统计信息
+   */
+  getArchiveStatistics() {
+    if (!this.db) return { totalArchives: 0, totalLogs: 0, totalCompressedSize: 0 };
+
+    const statsQuery = `
+      SELECT 
+        COUNT(*) as totalArchives,
+        SUM(originalCount) as totalLogs,
+        SUM(compressedSize) as totalCompressedSize,
+        SUM(originalSize) as totalOriginalSize
+      FROM archive_metadata
+    `;
+    
+    const stmt = this.db.prepare(statsQuery);
+    let stats = { totalArchives: 0, totalLogs: 0, totalCompressedSize: 0, totalOriginalSize: 0 };
+    if (stmt.step()) {
+      stats = stmt.getAsObject();
+    }
+    stmt.free();
+
+    // 计算压缩比
+    if (stats.totalOriginalSize > 0) {
+      stats.compressionRatio = ((stats.totalCompressedSize / stats.totalOriginalSize) * 100).toFixed(2) + '%';
+    }
+
+    return stats;
   }
 
   /**
