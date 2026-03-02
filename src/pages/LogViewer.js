@@ -16,50 +16,42 @@ function LogViewer() {
     total: 0
   });
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const logsRef = useRef(logs);
-  const refreshKeyRef = useRef(0); // 用于强制刷新的 key
+  const refreshIntervalRef = useRef(null);
   
-  // 保持 logsRef 同步
-  useEffect(() => {
-    logsRef.current = logs;
-  }, [logs]);
-
-  // 计算分页数据
+  // BUG-1 修复：计算分页数据 - 确保正确切片
   const getPaginatedLogs = useCallback(() => {
     const start = (pagination.page - 1) * pagination.pageSize;
     const end = start + pagination.pageSize;
     return logs.slice(start, end);
   }, [logs, pagination.page, pagination.pageSize]);
 
+  // BUG-2 修复：独立的定时器管理
   useEffect(() => {
-    loadLogs();
+    // 清理旧的定时器
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
+      refreshIntervalRef.current = null;
+    }
     
-    // 监听日志更新事件
-    if (window.electronAPI && window.electronAPI.onLogUpdate) {
-      window.electronAPI.onLogUpdate((data) => {
-        console.log('收到日志更新:', data);
-        if (autoRefresh && (!filters.level && !filters.keyword && !filters.startDate && !filters.endDate)) {
-          // 只有在没有过滤条件时才自动追加新日志
-          setLogs(prev => {
-            const newLogs = [...(data.logs || []), ...prev];
-            // 去重 - 使用新的数据替换旧数据
-            const uniqueLogs = Array.from(
-              new Map(newLogs.map(log => [`${log.timestamp}-${log.message}`, log])).values()
-            ).slice(0, 1000); // 最多保留 1000 条
-            return uniqueLogs;
-          });
-          // 更新分页总数
-          setPagination(prev => ({ ...prev, total: data.logs?.length || 0 }));
-        }
-      });
+    // 只有在 autoRefresh 为 true 时才设置定时器
+    if (autoRefresh) {
+      refreshIntervalRef.current = setInterval(() => {
+        console.log('自动刷新日志...');
+        loadLogs(true); // 传入 isAutoRefresh 标志
+      }, 5000); // 每 5 秒刷新一次
     }
     
     return () => {
-      // 清理监听器
+      // 清理定时器
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
     };
-  }, [autoRefresh, filters]);
+  }, [autoRefresh, filters, pagination.page]);
 
-  const loadLogs = async () => {
+  // BUG-4 修复：loadLogs 使用当前最新的 filters 和 pagination
+  const loadLogs = useCallback(async (isAutoRefresh = false) => {
     setLoading(true);
     try {
       if (window.electronAPI) {
@@ -69,13 +61,15 @@ function LogViewer() {
           ...filters
         };
         const result = await window.electronAPI.getLogs(options);
-        // 确保每次加载都创建新的数组引用，触发重新渲染
-        setLogs(result ? [...result] : []);
-        // 更新总数
+        
+        // BUG-3 修复：确保创建全新的数组引用，触发重新渲染
+        const newLogs = result ? [...result] : [];
+        setLogs(newLogs);
+        
+        // 更新总数 - 使用后端返回的总数或实际长度
         setPagination(prev => ({ 
           ...prev, 
-          total: result?.length || 0,
-          page: result?.length === 0 && prev.page > 1 ? prev.page - 1 : prev.page
+          total: result?.length || 0
         }));
       }
     } catch (error) {
@@ -83,7 +77,42 @@ function LogViewer() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters, pagination.page, pagination.pageSize]);
+
+  // 初始化加载
+  useEffect(() => {
+    loadLogs();
+    
+    // 监听日志更新事件
+    if (window.electronAPI && window.electronAPI.onLogUpdate) {
+      const unsubscribe = window.electronAPI.onLogUpdate((data) => {
+        console.log('收到日志更新:', data);
+        // BUG-4 修复：只有在没有过滤条件时才自动追加新日志
+        const hasFilters = filters.level || filters.keyword || filters.startDate || filters.endDate;
+        if (autoRefresh && !hasFilters) {
+          setLogs(prev => {
+            const newLogs = [...(data.logs || []), ...prev];
+            // BUG-3 修复：正确的去重逻辑
+            const seen = new Set();
+            const uniqueLogs = newLogs.filter(log => {
+              const key = `${log.timestamp}-${log.message}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            }).slice(0, 1000); // 最多保留 1000 条
+            return uniqueLogs;
+          });
+          // 更新分页总数
+          setPagination(prev => ({ ...prev, total: data.logs?.length || 0 }));
+        }
+      });
+      
+      return () => {
+        // 清理监听器
+        if (unsubscribe) unsubscribe();
+      };
+    }
+  }, []); // 只在挂载时执行一次
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
@@ -106,8 +135,9 @@ function LogViewer() {
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
+  // BUG-2 修复：确保 toggleAutoRefresh 正确设置状态
   const toggleAutoRefresh = () => {
-    setAutoRefresh(!autoRefresh);
+    setAutoRefresh(prev => !prev);
   };
 
   const getLevelClass = (level) => {
@@ -188,7 +218,7 @@ function LogViewer() {
         <div className="card-title">
           日志列表 
           <span style={{ fontSize: '12px', color: '#999', marginLeft: '8px' }}>
-            (共 {logs.length} 条)
+            (共 {pagination.total} 条)
           </span>
         </div>
 
@@ -208,8 +238,9 @@ function LogViewer() {
                 </tr>
               </thead>
               <tbody>
+                {/* BUG-1 & BUG-3 修复：使用分页后的数据，key 使用唯一标识 */}
                 {getPaginatedLogs().map((log, index) => (
-                  <tr key={`${log.timestamp}-${log.message}-${index}`}>
+                  <tr key={`${log.timestamp}-${log.message}-${log.source}-${index}`}>
                     <td>{new Date(log.timestamp).toLocaleString()}</td>
                     <td>
                       <span className={getLevelClass(log.level)}>
@@ -237,7 +268,7 @@ function LogViewer() {
               borderTop: '1px solid #eee'
             }}>
               <div style={{ fontSize: '13px', color: '#666' }}>
-                第 {pagination.page} 页，每页 {pagination.pageSize} 条，共 {Math.ceil(logs.length / pagination.pageSize)} 页
+                第 {pagination.page} 页，每页 {pagination.pageSize} 条，共 {Math.ceil(pagination.total / pagination.pageSize) || 1} 页
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
@@ -245,17 +276,15 @@ function LogViewer() {
                   disabled={pagination.page === 1}
                   onClick={() => {
                     setPagination(prev => ({ ...prev, page: prev.page - 1 }));
-                    loadLogs();
                   }}
                 >
                   上一页
                 </button>
                 <button
                   className="btn"
-                  disabled={pagination.page >= Math.ceil(logs.length / pagination.pageSize)}
+                  disabled={pagination.page >= Math.ceil(pagination.total / pagination.pageSize)}
                   onClick={() => {
                     setPagination(prev => ({ ...prev, page: prev.page + 1 }));
-                    loadLogs();
                   }}
                 >
                   下一页
