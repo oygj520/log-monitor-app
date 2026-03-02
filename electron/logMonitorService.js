@@ -219,6 +219,22 @@ class LogMonitorService {
       source: path.basename(filePath)
     };
 
+    // === 新增：异常堆栈识别（必须添加在方法开头）===
+    const errorPatterns = [
+      /(Exception|Error|Throwable):\s*/i,
+      /Traceback \(most recent call last\)/,
+      /^\s+at\s+/,
+      /Caused by:/,
+      /Exception in thread/
+    ];
+
+    const isError = errorPatterns.some(pattern => pattern.test(line));
+    if (isError) {
+      log.level = 'ERROR';
+      return log;
+    }
+    // ===============================================
+
     // 尝试解析常见日志格式
     
     // 格式 1: [2024-01-01 12:00:00] [ERROR] message
