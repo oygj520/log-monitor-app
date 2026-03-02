@@ -1,0 +1,50 @@
+{
+  "version": "1.0.0",
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "settings": {
+    "dataPath": "E:\\LogMonitor\\data",
+    "autoStart": false,
+    "minimizeToTray": true,
+    "notificationEnabled": true,
+    "logRetentionDays": 30,
+    "refreshInterval": 5,
+    "theme": "light",
+    "language": "zh-CN"
+  },
+  "monitors": [
+    {
+      "id": "example-monitor-1",
+      "name": "示例监控 - 应用日志",
+      "paths": [
+        "E:\\logs\\application.log",
+        "E:\\logs\\error.log"
+      ],
+      "alertKeywords": ["ERROR", "FATAL", "CRITICAL"],
+      "customKeywords": ["exception", "failed", "timeout"],
+      "status": "stopped",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "alerts": {
+    "email": {
+      "enabled": false,
+      "recipients": [],
+      "smtpServer": "",
+      "smtpPort": 587,
+      "username": "",
+      "password": ""
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "",
+      "method": "POST",
+      "headers": {}
+    },
+    "sound": {
+      "enabled": true,
+      "file": ""
+    }
+  }
+}

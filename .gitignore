@@ -1,0 +1,50 @@
+# 依赖
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 构建输出
+build/
+dist/
+
+# Electron 打包
+out/
+
+# 日志
+logs/
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 用户数据（不提交到版本控制）
+E:/LogMonitor/data/config.json
+E:/LogMonitor/data/logs.db
+E:/LogMonitor/data/cache/
+E:/LogMonitor/data/backups/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 测试覆盖率
+coverage/
+
+# TypeScript
+*.tsbuildinfo
