@@ -16,30 +16,87 @@ class DatabaseService {
    * 初始化数据库
    */
   async initialize() {
+    console.log('[DatabaseService] 开始初始化数据库...');
+    
+    // 详细路径检查
+    console.log('[DatabaseService] PathManager.dataPath:', PathManager.dataPath);
+    console.log('[DatabaseService] PathManager.databasePath:', PathManager.databasePath);
+    
     this.dbPath = PathManager.getDatabasePath();
-    console.log('初始化数据库:', this.dbPath);
+    console.log('[DatabaseService] PathManager.getDatabasePath() 返回值:', this.dbPath);
+    
+    // null 检查
+    if (!this.dbPath) {
+      console.error('[DatabaseService] ❌ 严重错误：dbPath 为 null');
+      console.error('[DatabaseService] PathManager.databasePath:', PathManager.databasePath);
+      throw new Error('数据库路径为 null，PathManager 可能未正确初始化');
+    }
+    
+    // 验证路径有效性
+    const dbDir = path.dirname(this.dbPath);
+    console.log('[DatabaseService] 数据库目录:', dbDir);
+    
+    if (!fs.existsSync(dbDir)) {
+      console.log('[DatabaseService] 数据库目录不存在，尝试创建...');
+      try {
+        fs.mkdirSync(dbDir, { recursive: true });
+        console.log('[DatabaseService] ✅ 数据库目录创建成功');
+      } catch (e) {
+        console.error('[DatabaseService] ❌ 创建数据库目录失败:', e.message);
+        throw e;
+      }
+    }
     
     try {
-      // 初始化 sql.js
-      this.SQL = await initSqlJs();
+      // 初始化 sql.js - 增加内存限制防止 WASM 内存耗尽
+      console.log('[DatabaseService] 初始化 sql.js (heapSize: 256MB, stackSize: 16MB)...');
+      const wasmPath = path.join(__dirname, 'sql-wasm.wasm');
+      console.log('[DatabaseService] WASM 文件路径:', wasmPath);
+      
+      // 检查 WASM 文件是否存在
+      if (!fs.existsSync(wasmPath)) {
+        console.error('[DatabaseService] ❌ WASM 文件不存在:', wasmPath);
+        throw new Error('WASM 文件不存在：' + wasmPath);
+      }
+      
+      // 读取 WASM 文件为 Buffer
+      console.log('[DatabaseService] 读取 WASM 文件...');
+      const wasmBuffer = fs.readFileSync(wasmPath);
+      console.log('[DatabaseService] WASM 文件大小:', wasmBuffer.length, 'bytes');
+      
+      // 使用 wasmBinary 选项直接传递 WASM 数据
+      this.SQL = await initSqlJs({
+        wasmBinary: wasmBuffer,
+        heapSize: 256 * 1024 * 1024,  // 256MB 堆内存
+        stackSize: 16 * 1024 * 1024    // 16MB 栈内存
+      });
+      console.log('[DatabaseService] ✅ sql.js 初始化完成');
+      
+      // 启动内存监控
+      this.startMemoryMonitoring();
+      
+      // 启动定期 VACUUM 清理
+      this.startVacuumCleanup();
       
       // 检查数据库文件是否存在
       if (fs.existsSync(this.dbPath)) {
-        // 读取现有数据库文件
+        console.log('[DatabaseService] 数据库文件存在，加载现有数据库...');
         const fileBuffer = fs.readFileSync(this.dbPath);
+        console.log('[DatabaseService] 数据库文件大小:', fileBuffer.length, 'bytes');
         this.db = new this.SQL.Database(fileBuffer);
-        console.log('加载现有数据库成功');
+        console.log('[DatabaseService] ✅ 加载现有数据库成功');
       } else {
-        // 创建新数据库
+        console.log('[DatabaseService] 数据库文件不存在，创建新数据库...');
         this.db = new this.SQL.Database();
         this.createTables();
         this.saveDatabase();
-        console.log('创建新数据库成功');
+        console.log('[DatabaseService] ✅ 创建新数据库成功');
       }
       
-      console.log('数据库初始化成功');
+      console.log('[DatabaseService] 🎉 数据库初始化全部完成');
     } catch (error) {
-      console.error('数据库初始化失败:', error);
+      console.error('[DatabaseService] ❌ 数据库初始化失败:', error.message);
+      console.error('[DatabaseService] ❌ 堆栈:', error.stack);
       throw error;
     }
   }
@@ -578,11 +635,32 @@ class DatabaseService {
    */
   async createArchiveFile(logs, cutoffDateStr) {
     try {
-      const archiveDir = path.join(PathManager.getDataDir(), 'archives');
+      console.log('[DatabaseService] 开始创建归档文件...');
+      
+      const dataPath = PathManager.getDataPath();
+      console.log('[DatabaseService] PathManager.getDataPath():', dataPath);
+      if (!dataPath) {
+        console.error('[DatabaseService] ❌ PathManager.getDataPath() 返回 null');
+        console.error('[DatabaseService] PathManager.dataPath:', PathManager.dataPath);
+        throw new Error('PathManager.getDataPath() 返回 null');
+      }
+      
+      const archiveDir = PathManager.getArchivesPath();
+      console.log('[DatabaseService] PathManager.getArchivesPath():', archiveDir);
+      
+      if (!archiveDir) {
+        console.error('[DatabaseService] ❌ PathManager.getArchivesPath() 返回 null');
+        console.error('[DatabaseService] PathManager.archivesPath:', PathManager.archivesPath);
+        throw new Error('PathManager.getArchivesPath() 返回 null');
+      }
       
       // 确保归档目录存在
       if (!fs.existsSync(archiveDir)) {
+        console.log('[DatabaseService] 归档目录不存在，尝试创建...');
         fs.mkdirSync(archiveDir, { recursive: true });
+        console.log('[DatabaseService] ✅ 归档目录创建成功:', archiveDir);
+      } else {
+        console.log('[DatabaseService] ✅ 归档目录已存在:', archiveDir);
       }
 
       // 生成归档文件名
@@ -590,22 +668,30 @@ class DatabaseService {
       const timestamp = Date.now();
       const archiveId = `archive_${dateStr}_${timestamp}`;
       const archivePath = path.join(archiveDir, `${archiveId}.json.gz`);
+      console.log('[DatabaseService] 归档文件完整路径:', archivePath);
 
       // 序列化日志数据
+      console.log('[DatabaseService] 序列化', logs.length, '条日志...');
       const jsonData = JSON.stringify(logs, null, 2);
       const originalSize = Buffer.byteLength(jsonData, 'utf-8');
+      console.log('[DatabaseService] 原始数据大小:', originalSize, 'bytes');
 
       // 压缩数据
+      console.log('[DatabaseService] 压缩数据...');
       const compressed = zlib.gzipSync(Buffer.from(jsonData));
       const compressedSize = compressed.length;
+      console.log('[DatabaseService] 压缩后大小:', compressedSize, 'bytes');
 
       // 写入归档文件
+      console.log('[DatabaseService] 写入文件:', archivePath);
       fs.writeFileSync(archivePath, compressed);
+      console.log('[DatabaseService] ✅ 文件写入成功');
 
       // 计算校验和
       const checksum = crypto.createHash('md5').update(compressed).digest('hex');
+      console.log('[DatabaseService] 校验和:', checksum);
 
-      console.log(`[归档服务] 创建归档文件：${archivePath}`);
+      console.log(`[归档服务] ✅ 归档文件创建完成：${archivePath}`);
 
       return {
         success: true,
@@ -616,7 +702,8 @@ class DatabaseService {
         checksum
       };
     } catch (error) {
-      console.error('[归档服务] 创建归档文件失败:', error);
+      console.error('[归档服务] ❌ 创建归档文件失败:', error.message);
+      console.error('[归档服务] ❌ 堆栈:', error.stack);
       return { success: false, error: error.message };
     }
   }
@@ -780,9 +867,148 @@ class DatabaseService {
   }
 
   /**
+   * 启动内存监控 - 防止 WASM 内存耗尽
+   */
+  startMemoryMonitoring() {
+    console.log('[DatabaseService] 启动内存监控 (每 60 秒检查一次)...');
+    
+    this.memoryMonitorInterval = setInterval(() => {
+      if (!this.db || !this.SQL) {
+        console.log('[DatabaseService] 数据库未初始化，跳过内存检查');
+        return;
+      }
+      
+      try {
+        const memSize = this.db.getHeapSize();
+        const maxMem = this.db.getHeapMax();
+        const usagePercent = (memSize / maxMem) * 100;
+        
+        console.log(`[DatabaseService] 内存使用：${(memSize / 1024 / 1024).toFixed(2)}MB / ${(maxMem / 1024 / 1024).toFixed(2)}MB (${usagePercent.toFixed(1)}%)`);
+        
+        // 内存使用超过 80% 时警告并准备重启
+        if (usagePercent > 80) {
+          console.warn(`[DatabaseService] ⚠️ 内存使用超过 80%，准备重启数据库...`);
+          this.restartDatabase();
+        }
+      } catch (error) {
+        console.error('[DatabaseService] 内存检查失败:', error.message);
+      }
+    }, 60000); // 每 60 秒检查一次
+    
+    // 设置不干扰事件循环
+    if (this.memoryMonitorInterval.unref) {
+      this.memoryMonitorInterval.unref();
+    }
+  }
+  
+  /**
+   * 重启数据库 - 释放内存
+   */
+  async restartDatabase() {
+    console.log('[DatabaseService] 开始重启数据库...');
+    
+    try {
+      // 停止监控
+      if (this.memoryMonitorInterval) {
+        clearInterval(this.memoryMonitorInterval);
+        this.memoryMonitorInterval = null;
+      }
+      
+      if (this.vacuumInterval) {
+        clearInterval(this.vacuumInterval);
+        this.vacuumInterval = null;
+      }
+      
+      // 保存当前数据
+      if (this.db) {
+        this.saveDatabase();
+        this.db.close();
+        this.db = null;
+      }
+      
+      // 重新初始化
+      console.log('[DatabaseService] 重新初始化 sql.js...');
+      const wasmPath = path.join(__dirname, 'sql-wasm.wasm');
+      console.log('[DatabaseService] WASM 文件路径:', wasmPath);
+      
+      // 读取 WASM 文件为 Buffer
+      const wasmBuffer = fs.readFileSync(wasmPath);
+      console.log('[DatabaseService] WASM 文件大小:', wasmBuffer.length, 'bytes');
+      
+      // 使用 wasmBinary 选项直接传递 WASM 数据
+      this.SQL = await initSqlJs({
+        wasmBinary: wasmBuffer,
+        heapSize: 256 * 1024 * 1024,
+        stackSize: 16 * 1024 * 1024
+      });
+      
+      // 加载现有数据库
+      if (fs.existsSync(this.dbPath)) {
+        const fileBuffer = fs.readFileSync(this.dbPath);
+        this.db = new this.SQL.Database(fileBuffer);
+        console.log('[DatabaseService] ✅ 数据库重启完成，已加载现有数据');
+      } else {
+        this.db = new this.SQL.Database();
+        this.createTables();
+        this.saveDatabase();
+        console.log('[DatabaseService] ✅ 数据库重启完成，创建新数据库');
+      }
+      
+      // 重新启动监控
+      this.startMemoryMonitoring();
+      this.startVacuumCleanup();
+      
+      console.log('[DatabaseService] 🎉 数据库重启成功');
+    } catch (error) {
+      console.error('[DatabaseService] ❌ 数据库重启失败:', error.message);
+      console.error('[DatabaseService] ❌ 堆栈:', error.stack);
+      // 重启失败后尝试重新初始化
+      setTimeout(() => this.initialize(), 5000);
+    }
+  }
+  
+  /**
+   * 启动定期 VACUUM 清理 - 回收未使用的空间
+   */
+  startVacuumCleanup() {
+    console.log('[DatabaseService] 启动定期 VACUUM 清理 (每 300 秒执行一次)...');
+    
+    this.vacuumInterval = setInterval(() => {
+      if (!this.db) {
+        return;
+      }
+      
+      try {
+        console.log('[DatabaseService] 执行 VACUUM 清理...');
+        this.db.exec('VACUUM');
+        console.log('[DatabaseService] ✅ VACUUM 清理完成');
+      } catch (error) {
+        console.error('[DatabaseService] VACUUM 清理失败:', error.message);
+      }
+    }, 300000); // 每 5 分钟执行一次
+    
+    // 设置不干扰事件循环
+    if (this.vacuumInterval.unref) {
+      this.vacuumInterval.unref();
+    }
+  }
+  
+  /**
    * 关闭数据库
    */
   close() {
+    // 停止内存监控
+    if (this.memoryMonitorInterval) {
+      clearInterval(this.memoryMonitorInterval);
+      this.memoryMonitorInterval = null;
+    }
+    
+    // 停止 VACUUM 清理
+    if (this.vacuumInterval) {
+      clearInterval(this.vacuumInterval);
+      this.vacuumInterval = null;
+    }
+    
     if (this.db) {
       this.saveDatabase();
       this.db.close();

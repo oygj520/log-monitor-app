@@ -143,6 +143,8 @@ class LogMonitorService {
     this.filePositions = new Map();
     // 4. 文件句柄管理：添加文件句柄管理器
     this.fileHandleManager = new FileHandleManager();
+    // 增量更新：记录每个监控的最新日志时间戳
+    this.monitorLastTimestamp = new Map(); // monitorId -> lastTimestamp
   }
 
   async startMonitoring(config) {
@@ -176,6 +178,7 @@ class LogMonitorService {
 
       watcher.on('change', (filePath) => {
         console.log(`[监控服务] 文件变化：${filePath}`);
+        // 文件变化触发日志处理，替代原有的定时轮询
         this.processLogFile(filePath, monitorConfig, true);
       });
 
@@ -263,6 +266,64 @@ class LogMonitorService {
       console.error('[监控服务] 获取日志失败:', error);
       return [];
     }
+  }
+
+  /**
+   * 增量查询：只返回上次查询后的新日志
+   */
+  async getIncrementalLogs(monitorId, lastTimestamp = null) {
+    try {
+      // 如果没有指定时间戳，使用该监控记录的时间戳
+      let queryTimestamp = lastTimestamp;
+      if (!queryTimestamp && monitorId) {
+        queryTimestamp = this.monitorLastTimestamp.get(monitorId);
+      }
+      
+      // 如果还是没有时间戳，使用数据库中的状态
+      if (!queryTimestamp) {
+        queryTimestamp = this.databaseService.getQueryState('last_log_timestamp');
+      }
+      
+      // 查询增量日志
+      const result = await this.databaseService.getIncrementalLogs({
+        lastTimestamp: queryTimestamp,
+        pageSize: 100,
+        monitorId: monitorId
+      });
+      
+      // 更新该监控的最新时间戳
+      if (result.logs.length > 0 && result.lastTimestamp) {
+        if (monitorId) {
+          this.monitorLastTimestamp.set(monitorId, result.lastTimestamp);
+        }
+        // 同时更新全局状态
+        this.databaseService.updateQueryState('last_log_timestamp', result.lastTimestamp);
+      }
+      
+      console.log(`[监控服务] 增量查询：monitorId=${monitorId}, lastTimestamp=${queryTimestamp}, 新增日志=${result.logs.length}`);
+      
+      return result;
+    } catch (error) {
+      console.error('[监控服务] 增量查询失败:', error);
+      return { logs: [], hasMore: false, lastTimestamp: null };
+    }
+  }
+
+  /**
+   * 设置监控的最新时间戳（用于初始化）
+   */
+  setMonitorLastTimestamp(monitorId, timestamp) {
+    if (monitorId && timestamp) {
+      this.monitorLastTimestamp.set(monitorId, timestamp);
+      console.log(`[监控服务] 设置监控 ${monitorId} 的最新时间戳：${timestamp}`);
+    }
+  }
+
+  /**
+   * 获取监控的最新时间戳
+   */
+  getMonitorLastTimestamp(monitorId) {
+    return this.monitorLastTimestamp.get(monitorId) || null;
   }
 
   async processLogFile(filePath, monitorConfig, isUpdate = false) {
@@ -445,11 +506,12 @@ class LogMonitorService {
   }
 
   emitLogUpdate(logs) {
-    console.log(`[监控服务] 发送 ${logs.length} 条日志更新到前端`);
+    console.log(`[监控服务] 文件监听触发：发送 ${logs.length} 条日志更新到前端`);
     try {
       const { BrowserWindow } = require('electron');
       const windows = BrowserWindow.getAllWindows();
       if (windows.length > 0) {
+        // 前端通过 onLogUpdate 监听此事件，实现实时日志更新
         windows[0].webContents.send('log-update', {
           logs,
           count: logs.length,
@@ -468,7 +530,7 @@ class LogMonitorService {
       const windows = BrowserWindow.getAllWindows();
       if (windows.length > 0) {
         windows[0].webContents.send('monitoring-status-change', {
-          ...this.getStatus(),
+          monitors: this.getStatus(),
           fileHandleStats: this.fileHandleManager.getStats()
         });
       }

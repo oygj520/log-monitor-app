@@ -4,8 +4,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 const CONFIG = {
   MAX_LOGS_CACHE: 10000, // 最大缓存日志数
   VISIBLE_COUNT: 30, // 可见区域日志数
-  PAGE_SIZE: 100, // 每页加载数量
-  AUTO_REFRESH_INTERVAL: 5000 // 自动刷新间隔 (ms)
+  PAGE_SIZE: 100 // 每页加载数量
+  // 自动刷新已改为文件监听触发，不再使用定时轮询
 };
 
 // 环形缓冲区实现 - 用于内存限制
@@ -77,11 +77,15 @@ function LogViewer() {
     total: 0
   });
   
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const refreshIntervalRef = useRef(null);
+  const [autoRefresh, setAutoRefresh] = useState(true); // 控制是否实时监听文件变化
   const scrollContainerRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
   const itemHeight = 40; // 每行高度 (px)
+  
+  // 增量更新：记录当前已显示的最新日志时间戳
+  const lastTimestampRef = useRef(null);
+  // 记录是否已初始化（首次加载用全量，后续用增量）
+  const isInitializedRef = useRef(false);
 
   // 获取当前日志数组
   const getLogs = useCallback(() => {
@@ -117,58 +121,87 @@ function LogViewer() {
     return allLogs.slice(start, end);
   }, [logsVersion, pagination.page, pagination.pageSize]);
 
-  // BUG-2 修复：独立的定时器管理
-  useEffect(() => {
-    if (refreshIntervalRef.current) {
-      clearInterval(refreshIntervalRef.current);
-      refreshIntervalRef.current = null;
-    }
-    
-    if (autoRefresh) {
-      refreshIntervalRef.current = setInterval(() => {
-        console.log('自动刷新日志...');
-        loadLogs(true);
-      }, CONFIG.AUTO_REFRESH_INTERVAL);
-    }
-    
-    return () => {
-      if (refreshIntervalRef.current) {
-        clearInterval(refreshIntervalRef.current);
-        refreshIntervalRef.current = null;
-      }
-    };
-  }, [autoRefresh, filters, pagination.page]);
+  // 文件监听：由后端 chokidar 检测文件变化并触发 onLogUpdate 事件
+  // 无需定时轮询，节省资源
 
   // BUG-4 修复：loadLogs 使用当前最新的 filters 和 pagination
+  // 移除 filters 和 pagination 依赖，让函数内部直接读取最新值
   const loadLogs = useCallback(async (isAutoRefresh = false) => {
     setLoading(true);
     try {
       if (window.electronAPI) {
-        // 3. 后端过滤：传递过滤条件到后端
-        const options = {
-          page: pagination.page,
-          pageSize: pagination.pageSize,
-          ...filters
-        };
-        const result = await window.electronAPI.getLogs(options);
+        // 增量更新：如果有过滤器，使用全量查询；否则使用增量查询
+        // 直接读取当前最新的 filters 值
+        const currentFilters = filters;
+        const currentPagination = pagination;
+        const hasFilters = currentFilters.level || currentFilters.keyword || currentFilters.startDate || currentFilters.endDate;
         
-        // 2. 内存限制：使用环形缓冲区存储
-        const newLogs = result?.logs || [];
-        logsBufferRef.current.clear();
-        logsBufferRef.current.pushMany(newLogs);
-        setLogsVersion(prev => prev + 1);
-        
-        setPagination(prev => ({ 
-          ...prev, 
-          total: result?.total || newLogs.length
-        }));
+        let result;
+        if (hasFilters || !isInitializedRef.current) {
+          // 全量查询：有过滤器或首次加载
+          console.log('[LogViewer] 全量查询日志');
+          const options = {
+            page: currentPagination.page,
+            pageSize: currentPagination.pageSize,
+            ...currentFilters
+          };
+          result = await window.electronAPI.getLogs(options);
+          
+          // 2. 内存限制：使用环形缓冲区存储
+          const newLogs = result?.logs || [];
+          logsBufferRef.current.clear();
+          logsBufferRef.current.pushMany(newLogs);
+          setLogsVersion(prev => prev + 1);
+          
+          setPagination(prev => ({ 
+            ...prev, 
+            total: result?.total || newLogs.length
+          }));
+          
+          // 更新最新时间戳（取最新的日志）
+          if (newLogs.length > 0) {
+            const maxTimestamp = newLogs.reduce((max, log) => {
+              return log.timestamp > max ? log.timestamp : max;
+            }, newLogs[0].timestamp);
+            lastTimestampRef.current = maxTimestamp;
+            console.log('[LogViewer] 更新最新时间戳（全量）:', maxTimestamp);
+          }
+          
+          isInitializedRef.current = true;
+        } else {
+          // 增量查询：自动刷新时使用
+          console.log('[LogViewer] 增量查询日志，lastTimestamp:', lastTimestampRef.current);
+          result = await window.electronAPI.getIncrementalLogs({
+            lastTimestamp: lastTimestampRef.current
+          });
+          
+          const newLogs = result?.logs || [];
+          if (newLogs.length > 0) {
+            console.log('[LogViewer] 收到', newLogs.length, '条增量日志');
+            
+            // 追加新日志到缓冲区
+            logsBufferRef.current.pushMany(newLogs);
+            setLogsVersion(prev => prev + 1);
+            
+            // 更新最新时间戳
+            if (result.lastTimestamp) {
+              lastTimestampRef.current = result.lastTimestamp;
+              console.log('[LogViewer] 更新最新时间戳（增量）:', result.lastTimestamp);
+            }
+            
+            setPagination(prev => ({ 
+              ...prev, 
+              total: logsBufferRef.current.length
+            }));
+          }
+        }
       }
     } catch (error) {
       console.error('加载日志失败:', error);
     } finally {
       setLoading(false);
     }
-  }, [filters, pagination.page, pagination.pageSize]);
+  }, []); // 移除 filters 和 pagination 依赖，只在组件卸载时清理
 
   // 初始化加载
   useEffect(() => {
@@ -176,16 +209,28 @@ function LogViewer() {
     
     if (window.electronAPI && window.electronAPI.onLogUpdate) {
       const unsubscribe = window.electronAPI.onLogUpdate((data) => {
-        console.log('收到日志更新:', data);
+        console.log('[文件监听触发] 收到日志更新:', data);
         const hasFilters = filters.level || filters.keyword || filters.startDate || filters.endDate;
         
+        // 只有在开启自动刷新且没有过滤器时才处理实时更新
         if (autoRefresh && !hasFilters) {
-          // 2. 内存限制：使用环形缓冲区追加新日志
+          // 增量更新：追加新日志
           const newLogs = data.logs || [];
-          logsBufferRef.current.pushMany(newLogs);
-          setLogsVersion(prev => prev + 1);
-          
-          setPagination(prev => ({ ...prev, total: logsBufferRef.current.length }));
+          if (newLogs.length > 0) {
+            logsBufferRef.current.pushMany(newLogs);
+            setLogsVersion(prev => prev + 1);
+            
+            // 更新最新时间戳
+            if (newLogs.length > 0) {
+              const maxTimestamp = newLogs.reduce((max, log) => {
+                return log.timestamp > max ? log.timestamp : max;
+              }, lastTimestampRef.current || newLogs[0].timestamp);
+              lastTimestampRef.current = maxTimestamp;
+            }
+            
+            setPagination(prev => ({ ...prev, total: logsBufferRef.current.length }));
+            console.log('[LogViewer] 通过 onLogUpdate 追加', newLogs.length, '条日志');
+          }
         }
       });
       
@@ -281,7 +326,7 @@ function LogViewer() {
             onClick={toggleAutoRefresh}
             style={{ fontSize: '12px', padding: '4px 12px' }}
           >
-            {autoRefresh ? '🔔 自动刷新已开启' : '🔕 自动刷新已关闭'}
+            {autoRefresh ? '📡 实时监听已开启' : '📴 实时监听已关闭'}
           </button>
         </div>
         <div className="filter-bar">

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { message, Modal } from 'antd';
 
 function MonitorConfig() {
   const [monitors, setMonitors] = useState([]);
@@ -21,9 +22,9 @@ function MonitorConfig() {
     try {
       if (window.electronAPI) {
         const configs = await window.electronAPI.loadConfig();
-        if (configs && configs.monitors) {
-          setMonitors(configs.monitors);
-        }
+        // 确保 monitors 是数组
+        const monitors = Array.isArray(configs?.monitors) ? configs.monitors : [];
+        setMonitors(monitors);
       }
     } catch (error) {
       console.error('加载监控配置失败:', error);
@@ -134,11 +135,11 @@ function MonitorConfig() {
   const handleSubmit = async () => {
     try {
       if (!formData.name.trim()) {
-        alert('请输入监控名称');
+        message.error('请输入监控名称');
         return;
       }
       if (formData.paths.length === 0) {
-        alert('请至少添加一个监控路径');
+        message.error('请至少添加一个监控路径');
         return;
       }
 
@@ -153,7 +154,10 @@ function MonitorConfig() {
       // 保存配置
       if (window.electronAPI) {
         const existingConfig = await window.electronAPI.loadConfig();
-        const config = existingConfig || { monitors: [] };
+        // 确保 monitors 是数组
+        const config = {
+          monitors: Array.isArray(existingConfig?.monitors) ? existingConfig.monitors : []
+        };
         
         if (editingId) {
           config.monitors = config.monitors.map(m => 
@@ -168,29 +172,39 @@ function MonitorConfig() {
 
       handleCloseModal();
       loadMonitors();
-      alert('保存成功');
+      message.success('保存成功');
     } catch (error) {
       console.error('保存配置失败:', error);
-      alert('保存失败：' + error.message);
+      message.error('保存失败：' + error.message);
     }
   };
 
   const handleDeleteMonitor = async (id) => {
-    if (!confirm('确定要删除这个监控配置吗？')) return;
-
-    try {
-      if (window.electronAPI) {
-        const existingConfig = await window.electronAPI.loadConfig();
-        if (existingConfig && existingConfig.monitors) {
-          existingConfig.monitors = existingConfig.monitors.filter(m => m.id !== id);
-          await window.electronAPI.saveConfig(existingConfig);
-          loadMonitors();
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除这个监控配置吗？此操作不可恢复。',
+      okText: '确定',
+      cancelText: '取消',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          if (window.electronAPI) {
+            const existingConfig = await window.electronAPI.loadConfig();
+            // 确保 monitors 是数组
+            const monitors = Array.isArray(existingConfig?.monitors) ? existingConfig.monitors : [];
+            const config = {
+              monitors: monitors.filter(m => m.id !== id)
+            };
+            await window.electronAPI.saveConfig(config);
+            loadMonitors();
+            message.success('删除成功');
+          }
+        } catch (error) {
+          console.error('删除失败:', error);
+          message.error('删除失败：' + error.message);
         }
       }
-    } catch (error) {
-      console.error('删除失败:', error);
-      alert('删除失败：' + error.message);
-    }
+    });
   };
 
   const handleStartMonitor = async (monitor) => {
@@ -201,19 +215,14 @@ function MonitorConfig() {
           console.log('监控已启动:', result.id);
           // 刷新监控状态
           loadMonitors();
-          // 通知 Dashboard 更新状态
-          if (window.electronAPI.onMonitoringStatusChange) {
-            const status = await window.electronAPI.getMonitoringStatus();
-            window.electronAPI.onMonitoringStatusChange(status);
-          }
-          alert('监控已启动');
+          message.success('监控已启动');
         } else {
-          alert('启动失败：' + result.error);
+          message.error('启动失败：' + result.error);
         }
       }
     } catch (error) {
       console.error('启动监控失败:', error);
-      alert('启动失败：' + error.message);
+      message.error('启动失败：' + error.message);
     }
   };
 
@@ -221,11 +230,11 @@ function MonitorConfig() {
     try {
       if (window.electronAPI) {
         await window.electronAPI.stopMonitoring(id);
-        alert('监控已停止');
+        message.success('监控已停止');
       }
     } catch (error) {
       console.error('停止监控失败:', error);
-      alert('停止失败：' + error.message);
+      message.error('停止失败：' + error.message);
     }
   };
 

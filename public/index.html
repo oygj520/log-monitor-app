@@ -6,6 +6,15 @@
     <meta name="theme-color" content="#1890ff" />
     <meta name="description" content="日志监控桌面应用" />
     <title>日志监控系统</title>
+    <script>
+      window.addEventListener('error', (e) => {
+        console.error('[Global Error]', e.error);
+      });
+      window.addEventListener('load', () => {
+        console.log('[Window Loaded] DOM 加载完成');
+        console.log('[Root Element]', document.getElementById('root'));
+      });
+    </script>
   </head>
   <body>
     <noscript>您需要启用 JavaScript 来运行此应用。</noscript>

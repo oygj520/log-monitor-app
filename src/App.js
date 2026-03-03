@@ -18,6 +18,7 @@ function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [healthStatus, setHealthStatus] = useState(null);
   const [bookmarks, setBookmarks] = useState([]);
+  const [uptime, setUptime] = useState(0);
 
   // 导航菜单
   const menuItems = [
@@ -54,14 +55,37 @@ function App() {
 
   // 监听健康状态
   useEffect(() => {
+    let unsubscribe;
     if (window.electronAPI && window.electronAPI.onHealthStatus) {
-      window.electronAPI.onHealthStatus((status) => {
+      unsubscribe = window.electronAPI.onHealthStatus((status) => {
         setHealthStatus(status);
       });
       
       // 初始加载健康状态
       window.electronAPI.getHealthStatus().then(setHealthStatus);
     }
+    
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  // 获取运行时间
+  useEffect(() => {
+    const loadUptime = async () => {
+      if (window.electronAPI && window.electronAPI.getUptime) {
+        try {
+          const uptimeSeconds = await window.electronAPI.getUptime();
+          setUptime(uptimeSeconds);
+        } catch (error) {
+          console.error('获取运行时间失败:', error);
+        }
+      }
+    };
+    
+    loadUptime();
+    const interval = setInterval(loadUptime, 1000); // 每秒更新
+    return () => clearInterval(interval);
   }, []);
 
   // 快捷键支持
@@ -345,7 +369,7 @@ function App() {
       }}>
         <div>LogMonitor v1.0.0 | © 2024 OpenClaw Team</div>
         <div style={{ display: 'flex', gap: '16px' }}>
-          <span title="运行时间">⏱️ {(process.uptime && process.uptime().toFixed(0)) || 0}s</span>
+          <span title="运行时间">⏱️ {Math.floor(uptime)}s</span>
           <span title="快捷键帮助">⌨️ Ctrl+1-5 切换页面 | Ctrl+D 主题 | Ctrl+B 书签</span>
         </div>
       </footer>

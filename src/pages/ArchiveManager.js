@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { Modal, Input, message } from 'antd';
+const { confirm: modalConfirm } = Modal;
 
 function ArchiveManager() {
   const [archives, setArchives] = useState([]);
@@ -45,28 +47,36 @@ function ArchiveManager() {
   };
 
   const handleTriggerArchive = async () => {
-    const days = prompt('请输入要保留的天数（默认 7 天）:', '7');
-    if (!days) return;
-
-    const daysToKeep = parseInt(days) || 7;
-    
-    if (!confirm(`确定要归档 ${daysToKeep} 天前的日志吗？`)) return;
-
-    try {
-      if (window.electronAPI) {
-        const result = await window.electronAPI.triggerArchive(daysToKeep);
-        if (result.success) {
-          alert(`归档完成！\n归档日志数：${result.archived}\n压缩后大小：${formatSize(result.compressedSize)}`);
-          loadArchives();
-          loadStatistics();
-        } else {
-          alert('归档失败：' + result.error);
+    // 使用 antd Modal 替代 prompt
+    Modal.confirm({
+      title: '归档日志',
+      content: (
+        <div>
+          <p>确定要归档 7 天前的日志吗？</p>
+          <p style={{color: '#999', fontSize: '12px'}}>此操作将压缩并清理旧日志</p>
+        </div>
+      ),
+      okText: '确定',
+      cancelText: '取消',
+      onOk: async () => {
+        const daysToKeep = 7;
+        try {
+          if (window.electronAPI) {
+            const result = await window.electronAPI.triggerArchive(daysToKeep);
+            if (result && result.success) {
+              message.success(`归档完成！归档日志数：${result.archived || 0}`);
+              loadArchives();
+              loadStatistics();
+            } else {
+              message.error('归档失败：' + (result?.error || '未知错误'));
+            }
+          }
+        } catch (error) {
+          console.error('触发归档失败:', error);
+          message.error('归档失败：' + error.message);
         }
       }
-    } catch (error) {
-      console.error('触发归档失败:', error);
-      alert('归档失败：' + error.message);
-    }
+    });
   };
 
   const handleViewLogs = async (archive) => {

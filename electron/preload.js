@@ -1,6 +1,34 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-console.log('🔌 preload.js 开始执行');
+// ============================================
+// 第 9 轮修复：移除沙箱环境不兼容的 API
+// 说明：Electron 沙箱环境中不可使用 __dirname 和 process
+// ============================================
+console.log('============================================');
+console.log('🔌 preload.js 开始执行 (沙箱兼容模式)');
+console.log('📦 Electron 版本:', require('electron').ipcRenderer ? 'IPC 可用' : 'IPC 不可用');
+console.log('============================================');
+
+// 全局错误捕获
+window.addEventListener('error', (event) => {
+  console.error('❌ [Preload] 全局错误:', event.message);
+  console.error('❌ [Preload] 错误堆栈:', event.error?.stack);
+  ipcRenderer.send('preload-error', {
+    message: event.message,
+    stack: event.error?.stack,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno
+  });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('❌ [Preload] 未处理的 Promise 拒绝:', event.reason);
+  ipcRenderer.send('preload-error', {
+    type: 'unhandledrejection',
+    reason: event.reason?.toString()
+  });
+});
 
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -29,18 +57,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 通知
   showNotification: (title, message) => ipcRenderer.invoke('show-notification', title, message),
   
-  // 事件监听
+  // 事件监听 - 修复 callback 错误：检查 callback 是否为函数
   onLogUpdate: (callback) => {
-    ipcRenderer.on('log-update', (event, data) => callback(data));
+    if (typeof callback !== 'function') {
+      console.warn('[preload] onLogUpdate: callback 不是函数，忽略注册');
+      return () => {}; // 返回空函数
+    }
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('log-update', listener);
+    return () => ipcRenderer.removeListener('log-update', listener);
   },
   onAlert: (callback) => {
-    ipcRenderer.on('alert', (event, data) => callback(data));
+    if (typeof callback !== 'function') {
+      console.warn('[preload] onAlert: callback 不是函数，忽略注册');
+      return () => {};
+    }
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('alert', listener);
+    return () => ipcRenderer.removeListener('alert', listener);
   },
   onMonitoringStatusChange: (callback) => {
-    ipcRenderer.on('monitoring-status-change', (event, data) => callback(data));
+    if (typeof callback !== 'function') {
+      console.warn('[preload] onMonitoringStatusChange: callback 不是函数，忽略注册');
+      return () => {};
+    }
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('monitoring-status-change', listener);
+    return () => ipcRenderer.removeListener('monitoring-status-change', listener);
   },
   onArchiveComplete: (callback) => {
-    ipcRenderer.on('archive-complete', (event, data) => callback(data));
+    if (typeof callback !== 'function') {
+      console.warn('[preload] onArchiveComplete: callback 不是函数，忽略注册');
+      return () => {};
+    }
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('archive-complete', listener);
+    return () => ipcRenderer.removeListener('archive-complete', listener);
   },
   
   // 告警管理
@@ -72,10 +124,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getHealthStatus: () => ipcRenderer.invoke('get-health-status'),
   backupConfig: () => ipcRenderer.invoke('backup-config'),
   
-  // 健康状态监听
+  // 系统信息
+  getUptime: () => ipcRenderer.invoke('get-uptime'),
+  
+  // 健康状态监听 - 修复 callback 错误：检查 callback 是否为函数
   onHealthStatus: (callback) => {
-    ipcRenderer.on('health-status', (event, data) => callback(data));
+    if (typeof callback !== 'function') {
+      console.warn('[preload] onHealthStatus: callback 不是函数，忽略注册');
+      return () => {};
+    }
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('health-status', listener);
+    return () => ipcRenderer.removeListener('health-status', listener);
   }
 });
 
 console.log('✅ electronAPI 暴露完成');
+console.log('============================================');
+console.log('✅ preload.js 执行完成');
+console.log('============================================');
+
+// 通知主进程 preload 已加载
+ipcRenderer.send('preload-loaded');

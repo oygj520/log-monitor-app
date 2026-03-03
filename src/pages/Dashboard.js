@@ -20,28 +20,38 @@ function Dashboard({ stats }) {
     }, 10000);
 
     // 监听监控状态变化
+    let unsubscribeMonitorStatus;
     if (window.electronAPI && window.electronAPI.onMonitoringStatusChange) {
-      window.electronAPI.onMonitoringStatusChange((status) => {
-        console.log('监控状态变化:', status);
+      unsubscribeMonitorStatus = window.electronAPI.onMonitoringStatusChange((data) => {
+        console.log('监控状态变化:', data);
+        // 兼容两种格式：{ monitors: [...] } 或直接数组
+        const status = Array.isArray(data) ? data : (data?.monitors || []);
         setMonitorStatus(status);
       });
     }
     
     // 监听告警
+    let unsubscribeAlert;
     if (window.electronAPI && window.electronAPI.onAlert) {
-      window.electronAPI.onAlert((alert) => {
+      unsubscribeAlert = window.electronAPI.onAlert((alert) => {
         console.log('收到告警:', alert);
         setRecentAlerts(prev => [alert, ...prev].slice(0, 10));
       });
     }
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (unsubscribeMonitorStatus) unsubscribeMonitorStatus();
+      if (unsubscribeAlert) unsubscribeAlert();
+    };
   }, []);
 
   const loadMonitorStatus = async () => {
     try {
       if (window.electronAPI) {
-        const status = await window.electronAPI.getMonitoringStatus();
+        const data = await window.electronAPI.getMonitoringStatus();
+        // 兼容两种格式：{ monitors: [...] } 或直接数组
+        const status = Array.isArray(data) ? data : (data?.monitors || []);
         setMonitorStatus(status);
       }
     } catch (error) {

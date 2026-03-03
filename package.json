@@ -2,7 +2,7 @@
   "name": "log-monitor-app",
   "version": "1.0.0",
   "description": "跨平台日志监控桌面应用",
-  "homepage": "./",
+  "homepage": ".",
   "main": "electron/main.js",
   "scripts": {
     "start": "concurrently \"npm run dev:react\" \"wait-on http://localhost:3000 && electron .\"",
@@ -56,12 +56,13 @@
     "appId": "com.openclaw.logmonitor",
     "productName": "LogMonitor",
     "directories": {
-      "output": "dist",
+      "output": "dist-v6",
       "buildResources": "build"
     },
     "files": [
       "build/**/*",
       "electron/**/*",
+      "electron/sql-wasm.wasm",
       "package.json"
     ],
     "extraMetadata": {
